@@ -273,11 +273,53 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("sent_skipped", func(t *testing.T) {
-		recipients := []Recipient{{Row: 0, Address: "bad", Attach: "/missing", Command: "", Status: "Sent"}}
+	t.Run("comma_separated_emails", func(t *testing.T) {
+		attach := makeAttachment(t)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com,b@test.com, c@test.com", Attach: attach, Command: "echo test", Status: "Pending"}}
 		errs := validate(recipients)
 		if len(errs) > 0 {
-			t.Errorf("sent rows should be skipped, got errors: %v", errs)
+			t.Errorf("unexpected errors: %v", errs)
+		}
+	})
+
+	t.Run("comma_separated_one_invalid", func(t *testing.T) {
+		attach := makeAttachment(t)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com, not-valid, b@test.com", Attach: attach, Command: "echo test", Status: "Pending"}}
+		errs := validate(recipients)
+		if len(errs) == 0 {
+			t.Fatal("expected error for invalid email in list")
+		}
+		if !strings.Contains(errs[0], `"not-valid"`) {
+			t.Errorf("error should identify the bad address: %s", errs[0])
+		}
+	})
+
+	t.Run("comma_separated_all_invalid", func(t *testing.T) {
+		attach := makeAttachment(t)
+		recipients := []Recipient{{Row: 0, Address: "bad1, bad2", Attach: attach, Command: "echo test", Status: "Pending"}}
+		errs := validate(recipients)
+		if len(errs) != 2 {
+			t.Errorf("expected 2 errors for 2 bad addresses, got %d: %v", len(errs), errs)
+		}
+	})
+
+	t.Run("trailing_comma_ignored", func(t *testing.T) {
+		attach := makeAttachment(t)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com,", Attach: attach, Command: "echo test", Status: "Pending"}}
+		errs := validate(recipients)
+		if len(errs) > 0 {
+			t.Errorf("trailing comma should be ignored, got errors: %v", errs)
+		}
+	})
+
+	t.Run("sent_skipped", func(t *testing.T) {
+		recipients := []Recipient{
+			{Row: 0, Address: "bad", Attach: "/missing", Command: "", Status: "Sent"},
+			{Row: 1, Address: "bad", Attach: "/missing", Command: "", Status: "Skipped"},
+		}
+		errs := validate(recipients)
+		if len(errs) > 0 {
+			t.Errorf("sent/skipped rows should be skipped, got errors: %v", errs)
 		}
 	})
 

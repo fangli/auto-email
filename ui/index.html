@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>auto-email</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; padding: 24px; }
+  #app { width: 100%; height: calc(100vh - 48px); display: flex; flex-direction: column; }
+
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-bottom: 12px; flex-shrink: 0; }
+  .card h3 { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+
+  #progress-section { display: flex; align-items: center; gap: 12px; }
+  #progress-bar-bg { flex: 1; height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
+  #progress-bar-fill { height: 100%; background: #4ade80; border-radius: 3px; transition: width 0.3s; }
+  #progress-text { font-size: 13px; color: #aaa; white-space: nowrap; }
+
+  .field { margin-bottom: 8px; display: flex; gap: 8px; }
+  .field-label { color: #888; min-width: 70px; font-size: 14px; }
+  .field-value { color: #fff; font-weight: 500; font-size: 14px; }
+
+  #body-frame { width: 100%; border: 1px solid #333; border-radius: 4px; background: #fff; min-height: 80px; }
+
+  /* Body + Attachment side by side */
+  #content-row { display: flex; gap: 12px; flex: 1; min-height: 0; margin-bottom: 12px; }
+  #body-card { flex: 1; min-width: 0; display: flex; flex-direction: column; margin-bottom: 0; }
+  #body-card #body-frame { flex: 1; min-height: 0; }
+
+  /* Attachment — fills right half */
+  #attach-card { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; margin-bottom: 0; }
+  #attach-info { font-size: 13px; color: #aaa; margin-bottom: 8px; flex-shrink: 0; }
+  #attach-info strong { color: #e0e0e0; font-weight: 500; }
+  #attach-preview-area { flex: 1; min-height: 0; overflow: hidden; }
+  #attach-preview-area iframe { width: 100%; height: 100%; border: 1px solid #333; border-radius: 4px; background: #fff; }
+  #attach-preview-area pre { height: 100%; overflow: auto; padding: 12px; background: #111; border: 1px solid #333; border-radius: 4px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+
+  #actions { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
+  button { padding: 10px 24px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #btn-send { background: #22c55e; color: #000; }
+  #btn-skip { background: #333; color: #ccc; }
+  #status-text { font-size: 14px; }
+
+  .error-box { background: #2a1515; border: 1px solid #ef4444; border-radius: 6px; padding: 12px; margin-bottom: 12px; font-size: 13px; color: #fca5a5; white-space: pre-wrap; word-wrap: break-word; flex-shrink: 0; }
+
+  #done-screen { flex: 1; display: flex; align-items: center; justify-content: center; }
+  #done-screen .card { text-align: center; padding: 48px 64px; }
+  #done-screen h2 { font-size: 24px; color: #4ade80; margin-bottom: 16px; }
+  #done-screen .stat { font-size: 15px; color: #aaa; margin-bottom: 6px; }
+
+  .status-sending { color: #facc15; }
+  .status-sent { color: #4ade80; }
+  .status-error { color: #ef4444; }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="main-view" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+    <div class="card">
+      <div id="progress-section">
+        <div id="progress-bar-bg"><div id="progress-bar-fill"></div></div>
+        <div id="progress-text"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Recipient</h3>
+      <div class="field"><span class="field-label">To:</span><span class="field-value" id="to-value"></span></div>
+      <div class="field"><span class="field-label">Subject:</span><span class="field-value" id="subject-value"></span></div>
+    </div>
+
+    <div id="content-row">
+      <div class="card" id="body-card">
+        <h3>Body</h3>
+        <iframe id="body-frame" sandbox="allow-same-origin"></iframe>
+      </div>
+
+      <div class="card" id="attach-card">
+        <h3>Attachment</h3>
+        <div id="attach-info"></div>
+        <div id="attach-preview-area"></div>
+      </div>
+    </div>
+
+    <div id="error-section" class="hidden">
+      <div class="error-box" id="error-text"></div>
+    </div>
+
+    <div class="card">
+      <div id="actions">
+        <span id="status-text"></span>
+        <button id="btn-skip">Skip</button>
+        <button id="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="done-screen" class="hidden">
+    <div class="card">
+      <h2>All Done</h2>
+      <div class="stat" id="stat-total"></div>
+      <div class="stat" id="stat-sent-ever"></div>
+      <div class="stat" id="stat-sent-run"></div>
+      <div class="stat" id="stat-skipped-run"></div>
+      <div class="stat" id="stat-remaining"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const $ = (sel) => document.querySelector(sel);
+
+  let attachCacheKey = '';
+
+  function updateUI(data) {
+    if (data.state === 'done') {
+      $('#main-view').classList.add('hidden');
+      $('#done-screen').classList.remove('hidden');
+      const p = data.progress;
+      $('#stat-total').textContent = 'Total emails: ' + p.total;
+      $('#stat-sent-ever').textContent = 'Sent (all time): ' + p.sentEver;
+      $('#stat-sent-run').textContent = 'Sent (this run): ' + p.sentRun;
+      $('#stat-skipped-run').textContent = 'Skipped (this run): ' + p.skippedRun;
+      $('#stat-remaining').textContent = 'Remaining: ' + (p.total - p.sentEver - p.skippedRun);
+      return;
+    }
+
+    $('#main-view').classList.remove('hidden');
+    $('#done-screen').classList.add('hidden');
+
+    const r = data.recipient;
+    const p = data.progress;
+
+    const pct = p.total > 0 ? (p.sentEver / p.total * 100) : 0;
+    $('#progress-bar-fill').style.width = pct + '%';
+    $('#progress-text').textContent = p.current + ' of ' + p.pending + ' pending \u00b7 ' + p.sentEver + '/' + p.total + ' sent';
+
+    $('#to-value').textContent = r.address;
+    $('#subject-value').textContent = r.subject;
+
+    const frame = $('#body-frame');
+    const bodyDoc = '<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;padding:12px;margin:0;color:#333;line-height:1.6;}</style></head><body>' + escapeForSrcdoc(r.body) + '</body></html>';
+    frame.srcdoc = bodyDoc;
+    frame.onload = function() {
+      try {
+        const h = frame.contentDocument.documentElement.scrollHeight;
+        frame.style.height = Math.min(Math.max(h + 4, 80), 300) + 'px';
+      } catch(e) {}
+    };
+
+    if (r.attach) {
+      $('#attach-card').classList.remove('hidden');
+      $('#attach-info').innerHTML = '<strong>' + escapeHtml(r.attach) + '</strong> (' + escapeHtml(r.attachSize) + ')';
+
+      const newKey = r.attach;
+      if (attachCacheKey !== newKey) {
+        attachCacheKey = newKey;
+        const area = $('#attach-preview-area');
+        const bust = '?t=' + Date.now();
+        if (r.attachExt === 'pdf') {
+          area.innerHTML = '<iframe src="/api/attachment' + bust + '#toolbar=0"></iframe>';
+        } else if (['png','jpg','jpeg','gif','webp','svg','bmp'].includes(r.attachExt)) {
+          area.innerHTML = '<img src="/api/attachment' + bust + '" style="max-width:100%;max-height:100%;object-fit:contain;">';
+        } else if (r.attachExt === 'txt' || r.attachExt === 'docx') {
+          area.innerHTML = '<pre>Loading preview...</pre>';
+          fetch('/api/preview').then(resp => {
+            if (resp.status === 204) { area.innerHTML = ''; return; }
+            return resp.text();
+          }).then(text => {
+            if (text) area.innerHTML = '<pre>' + escapeHtml(text) + '</pre>';
+          }).catch(() => { area.innerHTML = ''; });
+        } else {
+          area.innerHTML = '';
+        }
+      }
+    } else {
+      $('#attach-card').classList.add('hidden');
+    }
+
+    if (data.state === 'error' && data.error) {
+      $('#error-section').classList.remove('hidden');
+      $('#error-text').textContent = data.error;
+    } else {
+      $('#error-section').classList.add('hidden');
+    }
+
+    const sending = data.state === 'sending';
+    const sent = data.state === 'sent';
+    const isError = data.state === 'error';
+
+    $('#btn-send').disabled = sending || sent;
+    $('#btn-send').textContent = isError ? 'Retry' : 'Send';
+    $('#btn-skip').disabled = sending || sent;
+
+    const st = $('#status-text');
+    st.className = '';
+    if (sending) { st.className = 'status-sending'; st.textContent = 'Sending...'; }
+    else if (sent) { st.className = 'status-sent'; st.textContent = 'Sent!'; }
+    else if (isError) { st.className = 'status-error'; st.textContent = 'Failed'; }
+    else { st.textContent = ''; }
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function escapeForSrcdoc(s) {
+    if (/<[a-z][\s\S]*>/i.test(s)) return s;
+    return '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;">' + escapeHtml(s) + '</pre>';
+  }
+
+  $('#btn-send').onclick = () => { if (!$('#btn-send').disabled) fetch('/api/send', {method:'POST'}); };
+  $('#btn-skip').onclick = () => { if (!$('#btn-skip').disabled) fetch('/api/skip', {method:'POST'}); };
+
+  const events = new EventSource('/events');
+  events.onmessage = (e) => {
+    try { updateUI(JSON.parse(e.data)); } catch(err) { console.error('SSE parse error:', err); }
+  };
+  events.onerror = () => {
+    setTimeout(() => { document.title = 'auto-email (disconnected)'; }, 1000);
+  };
+
+  fetch('/api/status').then(r => r.json()).then(updateUI).catch(console.error);
+})();
+</script>
+</body>
+</html>

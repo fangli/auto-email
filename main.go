@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	tea "charm.land/bubbletea/v2"
 )
 
 type AppData struct {
@@ -103,13 +101,22 @@ func validate(recipients []Recipient) []string {
 	seenExec := make(map[string]bool)
 
 	for _, r := range recipients {
-		if r.Status == "Sent" {
+		if r.Status == "Sent" || r.Status == "Skipped" {
 			continue
 		}
 
-		_, err := mail.ParseAddress(r.Address)
-		if err != nil || strings.TrimSpace(r.Address) == "" {
+		if strings.TrimSpace(r.Address) == "" {
 			errs = append(errs, fmt.Sprintf("  Row %d: Invalid email address %q\n    → Ensure the address is a valid non-empty email", r.Row+1, r.Address))
+		} else {
+			for _, addr := range strings.Split(r.Address, ",") {
+				addr = strings.TrimSpace(addr)
+				if addr == "" {
+					continue
+				}
+				if _, err := mail.ParseAddress(addr); err != nil {
+					errs = append(errs, fmt.Sprintf("  Row %d: Invalid email address %q in %q\n    → Ensure the address is a valid non-empty email", r.Row+1, addr, r.Address))
+				}
+			}
 		}
 
 		info, err := os.Stat(r.Attach)
@@ -210,13 +217,13 @@ func main() {
 	for i, r := range recipients {
 		if r.Status == "Sent" {
 			sentEver++
-		} else {
+		} else if r.Status == "Pending" {
 			pending = append(pending, i)
 		}
 	}
 
 	if len(pending) == 0 {
-		fmt.Printf("All %d emails already sent.\n", len(recipients))
+		fmt.Printf("All %d emails already processed.\n", len(recipients))
 		os.Exit(0)
 	}
 
@@ -228,16 +235,8 @@ func main() {
 		CSVPath:    csvPath,
 	}
 
-	m := newModel(app, pending, sentEver)
-	p := tea.NewProgram(m)
-	finalModel, err := p.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fm := finalModel.(model)
+	summary := runServer(app, pending, sentEver)
 	total := len(recipients)
-	remaining := total - fm.sentEver
-	fmt.Printf("\nSummary:\n  Total emails:     %d\n  Sent (all time):  %d\n  Sent (this run):  %d\n  Remaining:        %d\n", total, fm.sentEver, fm.sentRun, remaining)
+	remaining := total - summary.SentEver - summary.SkippedRun
+	fmt.Printf("\nSummary:\n  Total emails:     %d\n  Sent (all time):  %d\n  Sent (this run):  %d\n  Skipped:          %d\n  Remaining:        %d\n", total, summary.SentEver, summary.SentRun, summary.SkippedRun, remaining)
 }
