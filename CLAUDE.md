@@ -19,11 +19,12 @@ Single `main` package, three files:
 
 - **main.go** — Entry point, file I/O, CSV parsing with `_status` column management, validation (email addresses via `net/mail`, attachment existence, command PATH lookup, unresolved template vars). Exits with collected errors before TUI starts.
 - **template.go** — Regex-based `{{var}}` resolution (`\{\{\s*(\w+)\s*\}\}`). `buildRecipients()` resolves all templates per CSV row: address/subject/body/attachment first from CSV columns, then internal vars (`_address`, `_subject`, `_body`, `_attachment`) override CSV columns for the command template.
-- **tui.go** — Bubbletea v2 state machine (`statePreview` → `stateSending` → `stateSent`/`stateError`). Lipgloss v2 for styled boxes. Command execution via `tea.Cmd` closure with `exec.Command`. CSV is rewritten after each successful send.
+- **tui.go** — Bubbletea v2 state machine (`statePreview` → `stateSending` → `stateSent`/`stateError`). Lipgloss v2 for styled boxes. Bubbles v2 viewport for scrollable attachment preview. Command execution via `tea.Cmd` closure with `exec.Command`. CSV is rewritten after each successful send. Attachment preview supports `.pdf` (via `pdftotext`), `.txt`, and `.docx` (DIY zip+xml parser, stdlib only).
 
 ## Dependencies
 
 - `charm.land/bubbletea/v2` — TUI event loop (note: module path is `charm.land`, not `github.com/charmbracelet`)
+- `charm.land/bubbles/v2` — Viewport component for scrollable attachment preview
 - `charm.land/lipgloss/v2` — Terminal styling
 
 ## Key Design Decisions
@@ -32,3 +33,6 @@ Single `main` package, three files:
 - CSV is the persistence layer. `_status` column is added automatically if missing. Entire CSV is rewritten on each status update.
 - Internal template vars (`_address`, `_subject`, `_body`, `_attachment`) always take precedence over CSV columns with the same names.
 - Command strings are split with `strings.Fields()` — no shell quoting support.
+- TUI layout is three sections: email info (top, fixed), attachment preview (middle, scrollable), status/progress/prompt (bottom, pinned). The `renderLayout()` method handles all states.
+- PDF extraction shells out to `pdftotext` (poppler-utils) for quality. Falls back gracefully if not installed.
+- DOCX extraction uses stdlib `archive/zip` + `encoding/xml` — zero external dependencies.

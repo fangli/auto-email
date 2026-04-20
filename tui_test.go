@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -577,5 +579,138 @@ func TestFullFlowEscFromError(t *testing.T) {
 	_, rows, _ := loadCSV(app.CSVPath)
 	if rows[0][1] != "Pending" {
 		t.Errorf("CSV status = %q, want Pending", rows[0][1])
+	}
+}
+
+// --- PDF Preview ---
+
+func minimalPDF(text string) []byte {
+	streamContent := fmt.Sprintf("BT /F1 12 Tf (%s) Tj ET", text)
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.0\n")
+	obj1 := buf.Len()
+	buf.WriteString("1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n")
+	obj2 := buf.Len()
+	buf.WriteString("2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n")
+	obj3 := buf.Len()
+	buf.WriteString("3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>>>endobj\n")
+	obj4 := buf.Len()
+	buf.WriteString(fmt.Sprintf("4 0 obj<</Length %d>>\nstream\n%s\nendstream\nendobj\n", len(streamContent), streamContent))
+	xref := buf.Len()
+	buf.WriteString("xref\n0 5\n")
+	buf.WriteString("0000000000 65535 f \n")
+	buf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj1))
+	buf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj2))
+	buf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj3))
+	buf.WriteString(fmt.Sprintf("%010d 00000 n \n", obj4))
+	buf.WriteString(fmt.Sprintf("trailer<</Size 5/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF", xref))
+	return buf.Bytes()
+}
+
+func minimalDocx(text string) []byte {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, _ := w.Create("word/document.xml")
+	fmt.Fprintf(f, `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>%s</w:t></w:r></w:p></w:body></w:document>`, text)
+	w.Close()
+	return buf.Bytes()
+}
+
+func TestExtractPreviewText(t *testing.T) {
+	t.Run("unsupported_ext_returns_empty", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "file.png")
+		os.WriteFile(f, []byte("data"), 0644)
+		if got := extractPreviewText(f); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("nonexistent_returns_empty", func(t *testing.T) {
+		if got := extractPreviewText("/no/such/file.pdf"); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+	t.Run("valid_pdf_returns_text", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "test.pdf")
+		os.WriteFile(f, minimalPDF("Hello World"), 0644)
+		got := extractPreviewText(f)
+		if !strings.Contains(got, "Hello") {
+			t.Errorf("expected text containing 'Hello', got %q", got)
+		}
+	})
+	t.Run("txt_returns_content", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "note.txt")
+		os.WriteFile(f, []byte("Hello from txt"), 0644)
+		got := extractPreviewText(f)
+		if got != "Hello from txt" {
+			t.Errorf("got %q, want 'Hello from txt'", got)
+		}
+	})
+	t.Run("docx_returns_text", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "doc.docx")
+		os.WriteFile(f, minimalDocx("Hello from docx"), 0644)
+		got := extractPreviewText(f)
+		if !strings.Contains(got, "Hello from docx") {
+			t.Errorf("expected 'Hello from docx', got %q", got)
+		}
+	})
+	t.Run("docx_nonexistent_returns_empty", func(t *testing.T) {
+		if got := extractPreviewText("/no/such/file.docx"); got != "" {
+			t.Errorf("expected empty, got %q", got)
+		}
+	})
+}
+
+func TestPDFPreviewShown(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.pdf")
+	os.WriteFile(f, minimalPDF("Preview Content"), 0644)
+	r := testRecipient(f)
+	r.Attach = f
+	app, _ := makeTestApp(t, []Recipient{r})
+	m := newModel(app, []int{0}, 0)
+
+	if !m.hasPreview {
+		t.Fatal("expected pdfPreview to be true")
+	}
+	v := m.View()
+	if !strings.Contains(v.Content, "Preview") {
+		t.Error("view missing 'Preview'")
+	}
+}
+
+func TestPreviewNotShownForUnsupportedType(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file.png")
+	os.WriteFile(f, []byte("data"), 0644)
+	app, _ := makeTestApp(t, []Recipient{testRecipient(f)})
+	m := newModel(app, []int{0}, 0)
+
+	if m.hasPreview {
+		t.Fatal("expected pdfPreview to be false for unsupported type")
+	}
+}
+
+func TestPreviewReloadsOnAdvance(t *testing.T) {
+	dir := t.TempDir()
+	pdf1 := filepath.Join(dir, "a.pdf")
+	os.WriteFile(pdf1, minimalPDF("First PDF"), 0644)
+	img := filepath.Join(dir, "b.png")
+	os.WriteFile(img, []byte("data"), 0644)
+
+	r0 := testRecipientN(0, pdf1)
+	r0.Attach = pdf1
+	r1 := testRecipientN(1, img)
+	r1.Attach = img
+	app, _ := makeTestApp(t, []Recipient{r0, r1})
+	m := newModel(app, []int{0, 1}, 0)
+
+	if !m.hasPreview {
+		t.Fatal("expected pdfPreview true for first recipient")
+	}
+
+	m.state = stateSent
+	result, _ := m.Update(autoAdvanceMsg{})
+	m = result.(model)
+
+	if m.hasPreview {
+		t.Error("expected pdfPreview false after advancing to unsupported type")
 	}
 }

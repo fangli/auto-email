@@ -83,8 +83,9 @@ auto-email/
 ### Dependencies
 
 - `charm.land/bubbletea/v2` — TUI event loop, keypress handling, alt-screen
+- `charm.land/bubbles/v2` — Viewport component for scrollable attachment preview
 - `charm.land/lipgloss/v2` — Bordered boxes, colored text
-- Stdlib: `encoding/csv`, `os/exec`, `regexp`, `net/mail`, `os`, `fmt`, `strings`, `time`
+- Stdlib: `encoding/csv`, `os/exec`, `regexp`, `net/mail`, `archive/zip`, `encoding/xml`, `os`, `fmt`, `strings`, `time`, `io`, `path/filepath`
 
 ### Key Types
 
@@ -132,6 +133,25 @@ statePreview  ──Enter──▶  stateSending  ──success──▶  stateS
 - Alt screen: set via `v.AltScreen = true` on the `tea.View` struct (bubbletea v2 API).
 - Out-of-bounds guard: `View()` returns empty content when `cursor >= len(pending)` to prevent panic on final render after quit.
 
+### TUI Layout
+
+The TUI uses a three-section layout pinned to the terminal height:
+
+- **Top (fixed)**: Email info box — To, Subject, Body with separator rows
+- **Middle (flexible)**: Attachment box — shows file path and size; for `.pdf`, `.txt`, and `.docx` files, includes a scrollable text preview via the bubbles viewport component
+- **Bottom (pinned)**: Status line (fixed 1-line height), progress text, progress bar, prompt box
+
+The `renderLayout()` method handles all states, with `renderPreview()` and `renderError()` as thin wrappers that pass the appropriate prompt text and status message.
+
+### Attachment Preview
+
+Supported formats:
+- `.pdf` — shells out to `pdftotext` (poppler-utils); falls back gracefully if not installed
+- `.txt` — reads file directly via `os.ReadFile`
+- `.docx` — DIY parser using stdlib `archive/zip` + `encoding/xml`, extracts `<w:t>` text from `word/document.xml`
+
+All formats return `""` on any error, which hides the preview and shows only the attachment info line.
+
 ### CSV Persistence
 
 `saveCSV()` rewrites the entire CSV after each successful send. The row is updated in memory first (`Rows[row][statusCol] = "Sent"`), then written to disk. If the write fails, the TUI shows an error but doesn't crash — the row stays `Pending`, which is safe for re-run.
@@ -152,7 +172,7 @@ statePreview  ──Enter──▶  stateSending  ──success──▶  stateS
 
 - `template_test.go` — 21 subtests covering `resolveTemplate`, `hasUnresolved`, `buildRecipients`
 - `main_test.go` — 25 subtests covering file I/O, CSV parsing, validation, status column addition, bootstrap integration
-- `tui_test.go` — 24 subtests covering key sanity, state transitions, view rendering, full flow simulations
+- `tui_test.go` — 31 subtests covering key sanity, state transitions, view rendering, full flow simulations, attachment preview extraction (PDF/TXT/DOCX)
 
 ### TUI Test Approach
 

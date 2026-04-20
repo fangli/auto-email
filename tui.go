@@ -1,17 +1,19 @@
 package main
 
 import (
-	"bytes"
+	"archive/zip"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
-	"github.com/ledongthuc/pdf"
 )
 
 type state int
@@ -36,35 +38,86 @@ type model struct {
 	sentEver   int
 	width      int
 	height     int
-	viewport   viewport.Model
-	pdfText    string
-	pdfPreview bool
+	viewport    viewport.Model
+	hasPreview  bool
 }
 
-func extractPDFText(path string) string {
-	if !strings.HasSuffix(strings.ToLower(path), ".pdf") {
-		return ""
+func extractPreviewText(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".pdf":
+		out, err := exec.Command("pdftotext", path, "-").Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	case ".txt":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(data))
+	case ".docx":
+		return extractDocxText(path)
 	}
-	f, r, err := pdf.Open(path)
+	return ""
+}
+
+func extractDocxText(path string) string {
+	r, err := zip.OpenReader(path)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
-	reader, err := r.GetPlainText()
-	if err != nil {
-		return ""
+	defer r.Close()
+	for _, f := range r.File {
+		if f.Name != "word/document.xml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return ""
+		}
+		defer rc.Close()
+		return parseDocxXML(rc)
 	}
-	var buf bytes.Buffer
-	buf.ReadFrom(reader)
-	return buf.String()
+	return ""
 }
 
-func loadPDFPreview(m *model) {
+func parseDocxXML(r io.Reader) string {
+	dec := xml.NewDecoder(r)
+	var paragraphs []string
+	var current strings.Builder
+	inT := false
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Local == "t" {
+				inT = true
+			}
+		case xml.EndElement:
+			if t.Name.Local == "t" {
+				inT = false
+			} else if t.Name.Local == "p" {
+				paragraphs = append(paragraphs, current.String())
+				current.Reset()
+			}
+		case xml.CharData:
+			if inT {
+				current.Write(t)
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(paragraphs, "\n"))
+}
+
+func loadPreview(m *model) {
 	r := m.app.Recipients[m.pending[m.cursor]]
-	text := extractPDFText(r.Attach)
-	m.pdfText = text
-	m.pdfPreview = text != ""
-	if m.pdfPreview {
+	text := extractPreviewText(r.Attach)
+	m.hasPreview = text != ""
+	if m.hasPreview {
 		m.viewport.SetContent(text)
 	}
 	m.viewport.GotoTop()
@@ -81,7 +134,7 @@ func newModel(app *AppData, pending []int, sentEver int) model {
 		height:   24,
 		viewport: viewport.New(viewport.WithWidth(76), viewport.WithHeight(10)),
 	}
-	loadPDFPreview(&m)
+	loadPreview(&m)
 	return m
 }
 
@@ -114,7 +167,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+c":
 				return m, tea.Quit
 			default:
-				if m.pdfPreview {
+				if m.hasPreview {
 					var cmd tea.Cmd
 					m.viewport, cmd = m.viewport.Update(msg)
 					return m, cmd
@@ -148,7 +201,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.state = statePreview
-		loadPDFPreview(&m)
+		loadPreview(&m)
 		return m, nil
 	}
 	return m, nil
@@ -249,54 +302,102 @@ func renderProgressBar(current, total, width int) string {
 	)
 }
 
-func (m model) renderBoxes(r Recipient, w int) string {
-	innerW := w - 6 // border (1) + padding (2) on each side
+func renderSep(w int) string {
+	innerW := w - 6
 	if innerW < 1 {
 		innerW = 1
 	}
-	sep := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", innerW))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", innerW))
+}
 
+func (m model) renderBoxes(r Recipient, w int) string {
+	sep := renderSep(w)
 	content := fmt.Sprintf(
-		"%s  %s\n%s  %s\n%s\n%s  %s (%s)\n%s\n%s",
+		"%s  %s\n%s  %s\n%s\n%s",
 		labelStyle.Render("To:      "), valueStyle.Render(r.Address),
 		labelStyle.Render("Subject: "), valueStyle.Render(r.Subject),
 		sep,
-		labelStyle.Render("Attachment:"), valueStyle.Render(r.Attach), fileSize(r.Attach),
-		sep,
 		r.Body,
 	)
-
 	return boxStyle.Width(w).Render(content)
 }
 
-func (m model) renderPreview(statusLine string) string {
-	r := m.currentRecipient()
+func renderAttachLine(r Recipient) string {
+	return fmt.Sprintf("%s  %s (%s)", labelStyle.Render("Attachment:"), valueStyle.Render(r.Attach), fileSize(r.Attach))
+}
+
+func (m model) renderBottom(promptText string) string {
 	w := m.boxWidth()
 	total := len(m.app.Recipients)
-
-	boxes := m.renderBoxes(r, w)
 	progress := fmt.Sprintf("  Email %d of %d pending  |  %d/%d sent overall", m.cursor+1, len(m.pending), m.sentEver, total)
 	bar := renderProgressBar(m.sentEver, total, w)
-	prompt := promptStyle.Width(w).Render(helpStyle.Render("Press Enter to send the email immediately  |  Press ESC to cancel"))
+	prompt := promptStyle.Width(w).Render(helpStyle.Render(promptText))
+	return strings.Join([]string{"", progress, bar, "", prompt}, "\n")
+}
 
-	parts := []string{boxes, "", progress, bar, "", prompt}
+func renderAttachBox(r Recipient, w int) string {
+	return boxStyle.Width(w).Render(renderAttachLine(r))
+}
+
+func renderPreviewBox(vp viewport.Model, r Recipient, availH, w int) string {
+	innerW := w - 6
+	sep := renderSep(w)
+	attachLine := renderAttachLine(r)
+	scrollPct := fmt.Sprintf(" %3.0f%% ", vp.ScrollPercent()*100)
+	previewLabel := helpStyle.Render("Preview") + strings.Repeat(" ", max(0, innerW-lipgloss.Width("Preview")-lipgloss.Width(scrollPct))) + helpStyle.Render(scrollPct)
+
+	headerH := lipgloss.Height(attachLine + "\n" + sep + "\n" + previewLabel)
+	footerH := lipgloss.Height(sep + "\n" + "x")
+	innerH := availH - 4 - headerH - footerH
+	if innerH < 1 {
+		innerH = 1
+	}
+	vp.SetHeight(innerH)
+	vp.SetWidth(innerW)
+
+	content := attachLine + "\n" + sep + "\n" + previewLabel + "\n" + vp.View() + "\n" + sep + "\n" + helpStyle.Render("↑↓ / PgUp·PgDn to scroll")
+	return boxStyle.Width(w).Render(content)
+}
+
+func renderStatusLine(statusLine string) string {
 	if statusLine != "" {
-		parts = append(parts, statusLine)
+		return statusLine
+	}
+	return " "
+}
+
+func (m model) renderLayout(promptText, statusLine string) string {
+	r := m.currentRecipient()
+	w := m.boxWidth()
+
+	top := m.renderBoxes(r, w)
+	status := renderStatusLine(statusLine)
+	bottom := m.renderBottom(promptText)
+
+	topH := lipgloss.Height(top)
+	statusH := lipgloss.Height(status)
+	bottomH := lipgloss.Height(bottom)
+	availH := m.height - topH - statusH - bottomH
+
+	var middle string
+	if m.hasPreview && availH > 4 {
+		middle = renderPreviewBox(m.viewport, r, availH, w)
+	} else {
+		middle = renderAttachBox(r, w)
+	}
+	middleH := lipgloss.Height(middle)
+	if pad := availH - middleH; pad > 0 {
+		middle += strings.Repeat("\n", pad)
 	}
 
-	return strings.Join(parts, "\n")
+	return top + "\n" + middle + status + "\n" + bottom
+}
+
+func (m model) renderPreview(statusLine string) string {
+	return m.renderLayout("Press Enter to send the email immediately  |  Press ESC to cancel", statusLine)
 }
 
 func (m model) renderError() string {
-	r := m.currentRecipient()
-	w := m.boxWidth()
-	total := len(m.app.Recipients)
-
-	boxes := m.renderBoxes(r, w)
-	progress := fmt.Sprintf("  Email %d of %d pending  |  %d/%d sent overall", m.cursor+1, len(m.pending), m.sentEver, total)
-	bar := renderProgressBar(m.sentEver, total, w)
 	errMsg := errorStyle.Render(fmt.Sprintf("  Error: %v", m.err))
-	prompt := promptStyle.Width(w).Render(helpStyle.Render("Press Enter to retry sending  |  Press ESC to abort"))
-
-	return strings.Join([]string{boxes, "", progress, bar, "", prompt, errMsg}, "\n")
+	return m.renderLayout("Press Enter to retry sending  |  Press ESC to abort", errMsg)
 }
