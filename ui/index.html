@@ -77,7 +77,7 @@
     <div id="content-row">
       <div class="card" id="body-card">
         <h3>Body</h3>
-        <iframe id="body-frame" sandbox=""></iframe>
+        <iframe id="body-frame"></iframe>
       </div>
 
       <div class="card" id="attach-card">
@@ -115,41 +115,12 @@
 <script>
 (function() {
   const $ = (sel) => document.querySelector(sel);
-  const SAFE_BODY_TAGS = new Set(['a', 'b', 'blockquote', 'br', 'code', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'hr', 'i', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul']);
-  const DROP_BODY_TAGS = new Set(['audio', 'base', 'button', 'embed', 'form', 'iframe', 'img', 'input', 'link', 'math', 'meta', 'object', 'script', 'select', 'source', 'style', 'svg', 'textarea', 'track', 'video']);
-  const STRIP_ATTR_PREFIXES = ['on'];
-  const STRIP_ATTRS = new Set(['action', 'background', 'data', 'formaction', 'href', 'poster', 'sandbox', 'src', 'srcdoc', 'style', 'target', 'xlink:href']);
 
   let attachCacheKey = '';
 
   function clearNode(node) {
     while (node.firstChild) {
       node.removeChild(node.firstChild);
-    }
-  }
-
-  function looksLikeHtml(text) {
-    return /<[a-z][\s\S]*>/i.test(text);
-  }
-
-  function sanitizeBodyNode(node) {
-    for (const child of Array.from(node.children)) {
-      const tag = child.tagName.toLowerCase();
-      if (DROP_BODY_TAGS.has(tag)) {
-        child.remove();
-        continue;
-      }
-      if (!SAFE_BODY_TAGS.has(tag)) {
-        child.replaceWith(...Array.from(child.childNodes));
-        continue;
-      }
-      for (const attr of Array.from(child.attributes)) {
-        const name = attr.name.toLowerCase();
-        if (STRIP_ATTRS.has(name) || STRIP_ATTR_PREFIXES.some(prefix => name.startsWith(prefix))) {
-          child.removeAttribute(attr.name);
-        }
-      }
-      sanitizeBodyNode(child);
     }
   }
 
@@ -160,12 +131,10 @@
   }
 
   function bodyMarkup(body) {
-    if (!looksLikeHtml(body)) {
+    if (!/<[a-z][\s\S]*>/i.test(body)) {
       return '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;">' + escapeHtml(body) + '</pre>';
     }
-    const doc = new DOMParser().parseFromString(body, 'text/html');
-    sanitizeBodyNode(doc.body);
-    return doc.body.innerHTML;
+    return body;
   }
 
   function renderBody(body) {
@@ -190,7 +159,6 @@
 
     if (r.attachExt === 'pdf') {
       const iframe = document.createElement('iframe');
-      iframe.sandbox = 'allow-same-origin';
       iframe.src = '/api/attachment' + bust + '#toolbar=0';
       area.appendChild(iframe);
       return;
