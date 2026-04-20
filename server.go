@@ -47,6 +47,7 @@ type serverState struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	sendCmdFunc func(ctx context.Context, rec Recipient, baseDir string) (string, error)
+	dryrun      bool
 }
 
 const (
@@ -144,6 +145,7 @@ type statusResponse struct {
 	Progress   progressJSON   `json:"progress"`
 	Error      string         `json:"error"`
 	LoggedInAs string         `json:"loggedInAs"`
+	Dryrun     bool           `json:"dryrun"`
 }
 
 type attachmentJSON struct {
@@ -180,6 +182,7 @@ type statusSnapshot struct {
 	recipient  *Recipient
 	baseDir    string
 	loggedInAs string
+	dryrun     bool
 }
 
 func extractPreviewText(path string) string {
@@ -365,6 +368,7 @@ func (s *serverState) snapshotLocked() statusSnapshot {
 		total:      len(s.app.Recipients),
 		baseDir:    s.app.BaseDir,
 		loggedInAs: s.app.LoggedInAs,
+		dryrun:     s.dryrun,
 	}
 	if s.state != "done" {
 		_, r, ok := s.currentRecipientLocked()
@@ -389,6 +393,7 @@ func buildStatus(snapshot statusSnapshot) statusResponse {
 		},
 		Error:      snapshot.lastError,
 		LoggedInAs: snapshot.loggedInAs,
+		Dryrun:     snapshot.dryrun,
 	}
 	if snapshot.recipient != nil {
 		r := snapshot.recipient
@@ -517,6 +522,18 @@ func defaultSendCmd(ctx context.Context, rec Recipient, baseDir string) (string,
 	}
 	cmd := exec.CommandContext(ctx, "gws", args...)
 	return runCommandCombinedLimited(cmd, maxCommandOutputBytes)
+}
+
+func dryrunSendCmd(_ context.Context, rec Recipient, baseDir string) (string, error) {
+	args := []string{"gws", "gmail", "+send", "--to", rec.Address, "--subject", rec.Subject, "--body", rec.Body}
+	if looksLikeHtml(rec.Body) {
+		args = append(args, "--html")
+	}
+	for _, a := range rec.Attachments {
+		args = append(args, "-a", resolveRelPath(baseDir, a))
+	}
+	fmt.Printf("[dryrun] %s\n", strings.Join(args, " "))
+	return "", nil
 }
 
 func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
@@ -671,7 +688,7 @@ func (s *serverState) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func runServer(app *AppData, pending []int, sentEver int) Summary {
+func runServer(app *AppData, pending []int, sentEver int, dryrun bool) Summary {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &serverState{
 		app:      app,
@@ -682,6 +699,10 @@ func runServer(app *AppData, pending []int, sentEver int) Summary {
 		done:     make(chan struct{}),
 		ctx:      ctx,
 		cancel:   cancel,
+		dryrun:   dryrun,
+	}
+	if dryrun {
+		s.sendCmdFunc = dryrunSendCmd
 	}
 
 	mux := http.NewServeMux()

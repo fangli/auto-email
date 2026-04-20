@@ -214,9 +214,13 @@ func checkGws() (string, error) {
 
 func main() {
 	csvFile := "tasks.csv"
+	dryrun := false
 	for i, arg := range os.Args[1:] {
 		if arg == "--csv" && i+1 < len(os.Args[1:])-0 {
 			csvFile = os.Args[i+2]
+		}
+		if arg == "--dryrun" {
+			dryrun = true
 		}
 	}
 	csvPath, err := filepath.Abs(csvFile)
@@ -314,7 +318,10 @@ func main() {
 		LoggedInAs: loggedInAs,
 	}
 
-	summary := runServer(app, pending, sentEver)
+	if dryrun {
+		fmt.Println("Dryrun mode: no emails will be sent")
+	}
+	summary := runServer(app, pending, sentEver, dryrun)
 	total := len(recipients)
 	remaining := 0
 	for _, row := range app.Rows {

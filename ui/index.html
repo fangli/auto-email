@@ -394,7 +394,8 @@ Finance Team</code></pre>
     const isError = data.state === 'error';
 
     $('#btn-send').disabled = sending || sent;
-    $('#btn-send').textContent = isError ? 'Retry' : 'Send';
+    const sendLabel = data.dryrun ? 'Dryrun Send' : 'Send';
+    $('#btn-send').textContent = isError ? 'Retry' : sendLabel;
     $('#btn-skip').disabled = sending || sent;
 
     const st = $('#status-text');

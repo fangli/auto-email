@@ -649,6 +649,63 @@ func TestSSEStream(t *testing.T) {
 	}
 }
 
+// --- Dryrun ---
+
+func setupDryrunTest(t *testing.T) (*serverState, http.Handler) {
+	t.Helper()
+	s, ts := setupSingleTest(t)
+	s.dryrun = true
+	s.sendCmdFunc = dryrunSendCmd
+	return s, ts
+}
+
+func TestDryrunStatusFlag(t *testing.T) {
+	_, ts := setupDryrunTest(t)
+	sr := getStatus(t, ts)
+	if !sr.Dryrun {
+		t.Error("expected dryrun=true in status")
+	}
+}
+
+func TestDryrunStatusFlagFalse(t *testing.T) {
+	_, ts := setupSingleTest(t)
+	sr := getStatus(t, ts)
+	if sr.Dryrun {
+		t.Error("expected dryrun=false in status")
+	}
+}
+
+func TestDryrunSendUpdatesCSV(t *testing.T) {
+	s, ts := setupDryrunTest(t)
+
+	postAction(t, ts, "/api/send").Body.Close()
+	waitForState(t, ts, "sent", 5*time.Second)
+
+	_, rows, err := loadCSV(s.app.CSVPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0][1] != "Sent" {
+		t.Errorf("CSV status = %q, want Sent", rows[0][1])
+	}
+}
+
+func TestDryrunNeverCallsDefaultSend(t *testing.T) {
+	s, ts := setupDryrunTest(t)
+	called := false
+	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
+		called = true
+		return dryrunSendCmd(ctx, rec, baseDir)
+	}
+
+	postAction(t, ts, "/api/send").Body.Close()
+	waitForState(t, ts, "sent", 5*time.Second)
+
+	if !called {
+		t.Fatal("sendCmdFunc was not called at all")
+	}
+}
+
 // --- Index ---
 
 func TestIndexServesHTML(t *testing.T) {
