@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,6 +19,12 @@ import (
 func makeTestApp(t *testing.T, recipients []Recipient) (*AppData, string) {
 	t.Helper()
 	dir := t.TempDir()
+	for _, r := range recipients {
+		if strings.TrimSpace(r.Attach) != "" {
+			dir = filepath.Dir(r.Attach)
+			break
+		}
+	}
 	csvPath := filepath.Join(dir, "test.csv")
 
 	headers := []string{"email", "_status"}
@@ -34,6 +42,7 @@ func makeTestApp(t *testing.T, recipients []Recipient) (*AppData, string) {
 		StatusCol:  1,
 		Recipients: recipients,
 		CSVPath:    csvPath,
+		BaseDir:    dir,
 	}, dir
 }
 
@@ -83,7 +92,7 @@ func minimalDocx(text string) []byte {
 	return buf.Bytes()
 }
 
-func newTestServer(t *testing.T, s *serverState) *httptest.Server {
+func newTestServer(t *testing.T, s *serverState) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
@@ -93,12 +102,11 @@ func newTestServer(t *testing.T, s *serverState) *httptest.Server {
 	mux.HandleFunc("GET /api/attachment", s.handleAttachment)
 	mux.HandleFunc("GET /api/preview", s.handlePreview)
 	mux.HandleFunc("GET /events", s.handleEvents)
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-	return ts
+	return mux
 }
 
 func newState(app *AppData, pending []int, sentEver int) *serverState {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &serverState{
 		app:      app,
 		pending:  pending,
@@ -106,31 +114,44 @@ func newState(app *AppData, pending []int, sentEver int) *serverState {
 		state:    "preview",
 		sentEver: sentEver,
 		done:     make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 }
 
-func getStatus(t *testing.T, ts *httptest.Server) statusResponse {
+func doRequest(t *testing.T, handler http.Handler, method, path string) *http.Response {
 	t.Helper()
-	resp, err := http.Get(ts.URL + "/api/status")
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(method, path, nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+func doRequestBody(t *testing.T, handler http.Handler, method, path string, body []byte) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+func getStatus(t *testing.T, ts http.Handler) statusResponse {
+	t.Helper()
+	resp := doRequest(t, ts, http.MethodGet, "/api/status")
 	defer resp.Body.Close()
 	var sr statusResponse
-	json.NewDecoder(resp.Body).Decode(&sr)
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		t.Fatal(err)
+	}
 	return sr
 }
 
-func postAction(t *testing.T, ts *httptest.Server, path string) *http.Response {
+func postAction(t *testing.T, ts http.Handler, path string) *http.Response {
 	t.Helper()
-	resp, err := http.Post(ts.URL+path, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resp
+	return doRequest(t, ts, http.MethodPost, path)
 }
 
-func waitForState(t *testing.T, ts *httptest.Server, want string, timeout time.Duration) statusResponse {
+func waitForState(t *testing.T, ts http.Handler, want string, timeout time.Duration) statusResponse {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -142,6 +163,53 @@ func waitForState(t *testing.T, ts *httptest.Server, want string, timeout time.D
 	}
 	t.Fatalf("timed out waiting for state %q", want)
 	return statusResponse{}
+}
+
+type sseTestWriter struct {
+	mu         sync.Mutex
+	header     http.Header
+	body       bytes.Buffer
+	status     int
+	firstWrite chan struct{}
+	once       sync.Once
+}
+
+func newSSETestWriter() *sseTestWriter {
+	return &sseTestWriter{
+		header:     make(http.Header),
+		firstWrite: make(chan struct{}),
+	}
+}
+
+func (w *sseTestWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *sseTestWriter) WriteHeader(statusCode int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.status = statusCode
+}
+
+func (w *sseTestWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.body.Write(p)
+	if n > 0 {
+		w.once.Do(func() { close(w.firstWrite) })
+	}
+	return n, err
+}
+
+func (w *sseTestWriter) Flush() {}
+
+func (w *sseTestWriter) BodyString() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
 }
 
 // --- Status Endpoint ---
@@ -224,6 +292,15 @@ func TestSendError(t *testing.T) {
 	}
 }
 
+func TestFormatCommandError(t *testing.T) {
+	if got := formatCommandError(fmt.Errorf("boom"), ""); got != "boom" {
+		t.Errorf("got %q, want %q", got, "boom")
+	}
+	if got := formatCommandError(fmt.Errorf("boom"), "details"); got != "boom\ndetails" {
+		t.Errorf("got %q, want %q", got, "boom\ndetails")
+	}
+}
+
 func TestSendCSVWriteFailure(t *testing.T) {
 	attach := filepath.Join(t.TempDir(), "f.txt")
 	os.WriteFile(attach, []byte("x"), 0644)
@@ -258,6 +335,21 @@ func TestRetryAfterError(t *testing.T) {
 	waitForState(t, ts, "sent", 5*time.Second)
 }
 
+func TestSkipWhileSentConflicts(t *testing.T) {
+	attach := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(attach, []byte("x"), 0644)
+	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
+	s := newState(app, []int{0}, 0)
+	s.state = "sent"
+	ts := newTestServer(t, s)
+
+	resp := postAction(t, ts, "/api/skip")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
 func TestSendWhileSending409(t *testing.T) {
 	attach := filepath.Join(t.TempDir(), "f.txt")
 	os.WriteFile(attach, []byte("x"), 0644)
@@ -274,6 +366,34 @@ func TestSendWhileSending409(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestSendRejectsRequestBody(t *testing.T) {
+	attach := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(attach, []byte("x"), 0644)
+	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
+	s := newState(app, []int{0}, 0)
+	ts := newTestServer(t, s)
+
+	resp := doRequestBody(t, ts, http.MethodPost, "/api/send", []byte("x"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSkipRejectsLargeRequestBody(t *testing.T) {
+	attach := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(attach, []byte("x"), 0644)
+	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
+	s := newState(app, []int{0}, 0)
+	ts := newTestServer(t, s)
+
+	resp := doRequestBody(t, ts, http.MethodPost, "/api/skip", []byte("too much"))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", resp.StatusCode)
 	}
 }
 
@@ -370,10 +490,7 @@ func TestAttachmentEndpoint(t *testing.T) {
 	s := newState(app, []int{0}, 0)
 	ts := newTestServer(t, s)
 
-	resp, err := http.Get(ts.URL + "/api/attachment")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := doRequest(t, ts, http.MethodGet, "/api/attachment")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -384,6 +501,88 @@ func TestAttachmentEndpoint(t *testing.T) {
 	}
 }
 
+func TestAttachmentEndpointRejectsOutsideBase(t *testing.T) {
+	baseDir := t.TempDir()
+	outsideDir := t.TempDir()
+	f := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(f, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	app := &AppData{
+		Headers:    []string{"email", "_status"},
+		Rows:       [][]string{{"alice@test.com", "Pending"}},
+		StatusCol:  1,
+		Recipients: []Recipient{testRecipient(f)},
+		CSVPath:    filepath.Join(baseDir, "test.csv"),
+		BaseDir:    baseDir,
+	}
+	if err := saveCSV(app.CSVPath, app.Headers, app.Rows); err != nil {
+		t.Fatal(err)
+	}
+	s := newState(app, []int{0}, 0)
+	ts := newTestServer(t, s)
+
+	resp := doRequest(t, ts, http.MethodGet, "/api/attachment")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAttachmentEndpointRejectsSymlinkSwapAfterCache(t *testing.T) {
+	baseDir := t.TempDir()
+	attach := filepath.Join(baseDir, "attachment.txt")
+	if err := os.WriteFile(attach, []byte("safe"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsidePath, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &AppData{
+		Headers:    []string{"email", "_status"},
+		Rows:       [][]string{{"alice@test.com", "Pending"}},
+		StatusCol:  1,
+		Recipients: []Recipient{testRecipient(attach)},
+		CSVPath:    filepath.Join(baseDir, "test.csv"),
+		BaseDir:    baseDir,
+	}
+	if err := saveCSV(app.CSVPath, app.Headers, app.Rows); err != nil {
+		t.Fatal(err)
+	}
+	s := newState(app, []int{0}, 0)
+	ts := newTestServer(t, s)
+
+	resp := doRequest(t, ts, http.MethodGet, "/api/attachment")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("initial status = %d, want 200", resp.StatusCode)
+	}
+
+	if err := os.Remove(attach); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsidePath, attach); err != nil {
+		t.Skipf("symlink creation not permitted: %v", err)
+	}
+
+	resp = doRequest(t, ts, http.MethodGet, "/api/attachment")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status after symlink swap = %d, want 404", resp.StatusCode)
+	}
+
+	sr := getStatus(t, ts)
+	if sr.Recipient == nil {
+		t.Fatal("recipient is nil after symlink swap")
+	}
+	if sr.Recipient.AttachSize != "unknown" {
+		t.Errorf("attach size after symlink swap = %q, want unknown", sr.Recipient.AttachSize)
+	}
+}
+
 func TestPreviewEndpointTxt(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "note.txt")
 	os.WriteFile(f, []byte("Hello from txt"), 0644)
@@ -391,10 +590,7 @@ func TestPreviewEndpointTxt(t *testing.T) {
 	s := newState(app, []int{0}, 0)
 	ts := newTestServer(t, s)
 
-	resp, err := http.Get(ts.URL + "/api/preview")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := doRequest(t, ts, http.MethodGet, "/api/preview")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -413,10 +609,7 @@ func TestPreviewEndpointDocx(t *testing.T) {
 	s := newState(app, []int{0}, 0)
 	ts := newTestServer(t, s)
 
-	resp, err := http.Get(ts.URL + "/api/preview")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := doRequest(t, ts, http.MethodGet, "/api/preview")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -435,10 +628,7 @@ func TestPreviewEndpointPDF204(t *testing.T) {
 	s := newState(app, []int{0}, 0)
 	ts := newTestServer(t, s)
 
-	resp, err := http.Get(ts.URL + "/api/preview")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := doRequest(t, ts, http.MethodGet, "/api/preview")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", resp.StatusCode)
@@ -476,6 +666,19 @@ func TestExtractPreviewText(t *testing.T) {
 			t.Errorf("got %q, want 'Hello from txt'", got)
 		}
 	})
+	t.Run("txt_large_is_truncated", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "large.txt")
+		if err := os.WriteFile(f, bytes.Repeat([]byte("a"), maxPreviewBytes+128), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got := extractPreviewText(f)
+		if !strings.Contains(got, "[Preview truncated]") {
+			t.Fatalf("expected truncation marker, got %q", got[len(got)-min(len(got), 64):])
+		}
+		if len(got) > maxPreviewBytes+len("\n\n[Preview truncated]") {
+			t.Errorf("preview length = %d, unexpectedly large", len(got))
+		}
+	})
 	t.Run("docx_returns_text", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "doc.docx")
 		os.WriteFile(f, minimalDocx("Hello from docx"), 0644)
@@ -489,6 +692,13 @@ func TestExtractPreviewText(t *testing.T) {
 			t.Errorf("expected empty, got %q", got)
 		}
 	})
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // --- Full Flow ---
@@ -539,6 +749,7 @@ func TestFullFlowErrorRetry(t *testing.T) {
 	// Fix command and retry
 	s.mu.Lock()
 	s.app.Recipients[0].Command = "echo test"
+	s.app.Recipients[0].CommandArgs = nil
 	s.mu.Unlock()
 
 	postAction(t, ts, "/api/send").Body.Close()
@@ -559,23 +770,29 @@ func TestSSEStream(t *testing.T) {
 	s := newState(app, []int{0}, 0)
 	ts := newTestServer(t, s)
 
-	resp, err := http.Get(ts.URL + "/events")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
+	rr := newSSETestWriter()
+	done := make(chan struct{})
+	go func() {
+		ts.ServeHTTP(rr, req)
+		close(done)
+	}()
 
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+	select {
+	case <-rr.firstWrite:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial SSE event")
+	}
+	cancel()
+	<-done
+
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
 		t.Errorf("content-type = %q", ct)
 	}
 
-	// Read initial state event
-	buf := make([]byte, 4096)
-	n, err := resp.Body.Read(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	line := string(buf[:n])
+	line := rr.BodyString()
 	if !strings.Contains(line, "preview") {
 		t.Errorf("initial SSE missing 'preview': %s", line)
 	}
@@ -590,10 +807,7 @@ func TestIndexServesHTML(t *testing.T) {
 	s := newState(app, []int{0}, 0)
 	ts := newTestServer(t, s)
 
-	resp, err := http.Get(ts.URL + "/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := doRequest(t, ts, http.MethodGet, "/")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d", resp.StatusCode)

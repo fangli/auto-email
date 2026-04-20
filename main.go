@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"net/mail"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -15,6 +17,7 @@ type AppData struct {
 	StatusCol  int
 	Recipients []Recipient
 	CSVPath    string
+	BaseDir    string
 }
 
 func readFile(path string) (string, error) {
@@ -66,6 +69,9 @@ func loadCSV(path string) ([]string, [][]string, error) {
 
 	rows := records[1:]
 	for i := range rows {
+		if len(rows[i]) < len(headers) {
+			rows[i] = append(rows[i], make([]string, len(headers)-len(rows[i]))...)
+		}
 		for j := range rows[i] {
 			rows[i][j] = strings.TrimSpace(rows[i][j])
 		}
@@ -75,16 +81,27 @@ func loadCSV(path string) ([]string, [][]string, error) {
 }
 
 func saveCSV(path string, headers []string, rows [][]string) error {
-	f, err := os.Create(path)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	w := csv.NewWriter(f)
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	w := csv.NewWriter(tmp)
 	if err := w.Write(headers); err != nil {
+		tmp.Close()
 		return err
 	}
-	return w.WriteAll(rows)
+	if err := w.WriteAll(rows); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func indexOf(headers []string, name string) int {
@@ -96,11 +113,57 @@ func indexOf(headers []string, name string) int {
 	return -1
 }
 
-func validate(recipients []Recipient) []string {
+func resolveAttachmentPath(baseDir, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+
+	originalBaseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve base directory: %w", err)
+	}
+	baseAbs := originalBaseAbs
+	if realBase, err := filepath.EvalSymlinks(baseAbs); err == nil {
+		baseAbs = realBase
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("cannot evaluate base directory: %w", err)
+	}
+
+	candidate := path
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(baseAbs, candidate)
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve attachment path: %w", err)
+	}
+	if realPath, err := filepath.EvalSymlinks(candidateAbs); err == nil {
+		candidateAbs = realPath
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("cannot evaluate attachment path: %w", err)
+	} else if filepath.IsAbs(path) {
+		if relToOriginalBase, relErr := filepath.Rel(originalBaseAbs, candidateAbs); relErr == nil && relToOriginalBase != ".." && !strings.HasPrefix(relToOriginalBase, ".."+string(filepath.Separator)) {
+			candidateAbs = filepath.Join(baseAbs, relToOriginalBase)
+		}
+	}
+
+	rel, err := filepath.Rel(baseAbs, candidateAbs)
+	if err != nil {
+		return "", fmt.Errorf("cannot compare attachment path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("attachment path %q escapes %q", path, baseAbs)
+	}
+	return candidateAbs, nil
+}
+
+func validate(baseDir string, recipients []Recipient) []string {
 	var errs []string
 	seenExec := make(map[string]bool)
 
-	for _, r := range recipients {
+	for i := range recipients {
+		r := &recipients[i]
 		if r.Status == "Sent" || r.Status == "Skipped" {
 			continue
 		}
@@ -119,14 +182,32 @@ func validate(recipients []Recipient) []string {
 			}
 		}
 
-		info, err := os.Stat(r.Attach)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("  Row %d: Attachment file not found: %q\n    → Check that the file exists at the specified path", r.Row+1, r.Attach))
-		} else if info.IsDir() {
-			errs = append(errs, fmt.Sprintf("  Row %d: Attachment path is a directory: %q\n    → Provide a path to a file, not a directory", r.Row+1, r.Attach))
+		if strings.TrimSpace(r.Attach) != "" {
+			resolvedAttach, err := resolveAttachmentPath(baseDir, r.Attach)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("  Row %d: Attachment path is outside the CSV workspace: %q\n    → Keep attachments under %s", r.Row+1, r.Attach, baseDir))
+			} else {
+				info, err := os.Stat(resolvedAttach)
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("  Row %d: Attachment file not found: %q\n    → Check that the file exists at the specified path", r.Row+1, r.Attach))
+				} else if info.IsDir() {
+					errs = append(errs, fmt.Sprintf("  Row %d: Attachment path is a directory: %q\n    → Provide a path to a file, not a directory", r.Row+1, r.Attach))
+				} else {
+					r.AttachPath = resolvedAttach
+				}
+			}
 		}
 
-		parts := strings.Fields(r.Command)
+		parts := r.CommandArgs
+		if len(parts) == 0 && strings.TrimSpace(r.Command) != "" {
+			parsed, err := splitCommandLine(r.Command)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("  Row %d: Invalid command line %q\n    → Fix executable_commandline_template.txt quoting/escaping", r.Row+1, r.Command))
+			} else {
+				parts = parsed
+				r.CommandArgs = parsed
+			}
+		}
 		if len(parts) == 0 {
 			errs = append(errs, fmt.Sprintf("  Row %d: Command is empty\n    → Check executable_commandline_template.txt", r.Row+1))
 		} else {
@@ -148,7 +229,12 @@ func validate(recipients []Recipient) []string {
 }
 
 func main() {
-	csvPath := "email_recipients.csv"
+	csvPath, err := filepath.Abs("email_recipients.csv")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot resolve CSV path: %v\n", err)
+		os.Exit(1)
+	}
+	baseDir := filepath.Dir(csvPath)
 
 	addrTmpl, err := readTemplate("email_address_template.txt")
 	if err != nil {
@@ -206,7 +292,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	valErrs := validate(recipients)
+	valErrs := validate(baseDir, recipients)
 	if len(valErrs) > 0 {
 		fmt.Fprintf(os.Stderr, "Validation errors:\n\n%s\n", strings.Join(valErrs, "\n\n"))
 		os.Exit(1)
@@ -233,10 +319,16 @@ func main() {
 		StatusCol:  statusCol,
 		Recipients: recipients,
 		CSVPath:    csvPath,
+		BaseDir:    baseDir,
 	}
 
 	summary := runServer(app, pending, sentEver)
 	total := len(recipients)
-	remaining := total - summary.SentEver - summary.SkippedRun
+	remaining := 0
+	for _, row := range app.Rows {
+		if statusCol < len(row) && row[statusCol] == "Pending" {
+			remaining++
+		}
+	}
 	fmt.Printf("\nSummary:\n  Total emails:     %d\n  Sent (all time):  %d\n  Sent (this run):  %d\n  Skipped:          %d\n  Remaining:        %d\n", total, summary.SentEver, summary.SentRun, summary.SkippedRun, remaining)
 }

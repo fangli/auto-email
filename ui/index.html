@@ -77,7 +77,7 @@
     <div id="content-row">
       <div class="card" id="body-card">
         <h3>Body</h3>
-        <iframe id="body-frame" sandbox="allow-same-origin"></iframe>
+        <iframe id="body-frame" sandbox=""></iframe>
       </div>
 
       <div class="card" id="attach-card">
@@ -115,8 +115,126 @@
 <script>
 (function() {
   const $ = (sel) => document.querySelector(sel);
+  const SAFE_BODY_TAGS = new Set(['a', 'b', 'blockquote', 'br', 'code', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'hr', 'i', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul']);
+  const DROP_BODY_TAGS = new Set(['audio', 'base', 'button', 'embed', 'form', 'iframe', 'img', 'input', 'link', 'math', 'meta', 'object', 'script', 'select', 'source', 'style', 'svg', 'textarea', 'track', 'video']);
+  const STRIP_ATTR_PREFIXES = ['on'];
+  const STRIP_ATTRS = new Set(['action', 'background', 'data', 'formaction', 'href', 'poster', 'sandbox', 'src', 'srcdoc', 'style', 'target', 'xlink:href']);
 
   let attachCacheKey = '';
+
+  function clearNode(node) {
+    while (node.firstChild) {
+      node.removeChild(node.firstChild);
+    }
+  }
+
+  function looksLikeHtml(text) {
+    return /<[a-z][\s\S]*>/i.test(text);
+  }
+
+  function sanitizeBodyNode(node) {
+    for (const child of Array.from(node.children)) {
+      const tag = child.tagName.toLowerCase();
+      if (DROP_BODY_TAGS.has(tag)) {
+        child.remove();
+        continue;
+      }
+      if (!SAFE_BODY_TAGS.has(tag)) {
+        child.replaceWith(...Array.from(child.childNodes));
+        continue;
+      }
+      for (const attr of Array.from(child.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (STRIP_ATTRS.has(name) || STRIP_ATTR_PREFIXES.some(prefix => name.startsWith(prefix))) {
+          child.removeAttribute(attr.name);
+        }
+      }
+      sanitizeBodyNode(child);
+    }
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function bodyMarkup(body) {
+    if (!looksLikeHtml(body)) {
+      return '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;">' + escapeHtml(body) + '</pre>';
+    }
+    const doc = new DOMParser().parseFromString(body, 'text/html');
+    sanitizeBodyNode(doc.body);
+    return doc.body.innerHTML;
+  }
+
+  function renderBody(body) {
+    return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;padding:12px;margin:0;color:#333;line-height:1.6;}table{border-collapse:collapse;}td,th{border:1px solid #ddd;padding:6px;vertical-align:top;}blockquote{border-left:3px solid #ddd;margin:0;padding-left:12px;color:#555;}pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}</style></head><body>' + bodyMarkup(body) + '</body></html>';
+  }
+
+  function setAttachmentInfo(path, size) {
+    const info = $('#attach-info');
+    clearNode(info);
+    const strong = document.createElement('strong');
+    strong.textContent = path;
+    info.appendChild(strong);
+    if (size) {
+      info.appendChild(document.createTextNode(' (' + size + ')'));
+    }
+  }
+
+  function setAttachmentPreview(r) {
+    const area = $('#attach-preview-area');
+    clearNode(area);
+    const bust = '?t=' + Date.now();
+
+    if (r.attachExt === 'pdf') {
+      const iframe = document.createElement('iframe');
+      iframe.sandbox = 'allow-same-origin';
+      iframe.src = '/api/attachment' + bust + '#toolbar=0';
+      area.appendChild(iframe);
+      return;
+    }
+
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(r.attachExt)) {
+      const img = document.createElement('img');
+      img.src = '/api/attachment' + bust;
+      img.style.maxWidth = '100%';
+      img.style.maxHeight = '100%';
+      img.style.objectFit = 'contain';
+      area.appendChild(img);
+      return;
+    }
+
+    if (r.attachExt === 'txt' || r.attachExt === 'docx') {
+      const loading = document.createElement('pre');
+      loading.textContent = 'Loading preview...';
+      area.appendChild(loading);
+      const cacheKey = attachCacheKey;
+      fetch('/api/preview').then(resp => {
+        if (attachCacheKey !== cacheKey) {
+          return null;
+        }
+        if (resp.status === 204) {
+          clearNode(area);
+          return null;
+        }
+        return resp.text();
+      }).then(text => {
+        if (!text || attachCacheKey !== cacheKey) {
+          return;
+        }
+        clearNode(area);
+        const pre = document.createElement('pre');
+        pre.textContent = text;
+        area.appendChild(pre);
+      }).catch(() => {
+        if (attachCacheKey === cacheKey) {
+          clearNode(area);
+        }
+      });
+    }
+  }
 
   function updateUI(data) {
     if (data.state === 'done') {
@@ -127,7 +245,7 @@
       $('#stat-sent-ever').textContent = 'Sent (all time): ' + p.sentEver;
       $('#stat-sent-run').textContent = 'Sent (this run): ' + p.sentRun;
       $('#stat-skipped-run').textContent = 'Skipped (this run): ' + p.skippedRun;
-      $('#stat-remaining').textContent = 'Remaining: ' + (p.total - p.sentEver - p.skippedRun);
+      $('#stat-remaining').textContent = 'Remaining: 0';
       return;
     }
 
@@ -136,6 +254,12 @@
 
     const r = data.recipient;
     const p = data.progress;
+    if (!r) {
+      $('#to-value').textContent = '';
+      $('#subject-value').textContent = '';
+      $('#attach-card').classList.add('hidden');
+      return;
+    }
 
     const pct = p.total > 0 ? (p.sentEver / p.total * 100) : 0;
     $('#progress-bar-fill').style.width = pct + '%';
@@ -145,42 +269,32 @@
     $('#subject-value').textContent = r.subject;
 
     const frame = $('#body-frame');
-    const bodyDoc = '<html><head><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;padding:12px;margin:0;color:#333;line-height:1.6;}</style></head><body>' + escapeForSrcdoc(r.body) + '</body></html>';
-    frame.srcdoc = bodyDoc;
+    frame.srcdoc = renderBody(r.body || '');
     frame.onload = function() {
       try {
-        const h = frame.contentDocument.documentElement.scrollHeight;
+        const doc = frame.contentDocument;
+        if (!doc) {
+          return;
+        }
+        const h = doc.documentElement.scrollHeight;
         frame.style.height = Math.min(Math.max(h + 4, 80), 300) + 'px';
       } catch(e) {}
     };
 
     if (r.attach) {
       $('#attach-card').classList.remove('hidden');
-      $('#attach-info').innerHTML = '<strong>' + escapeHtml(r.attach) + '</strong> (' + escapeHtml(r.attachSize) + ')';
+      setAttachmentInfo(r.attach, r.attachSize);
 
       const newKey = r.attach;
       if (attachCacheKey !== newKey) {
         attachCacheKey = newKey;
-        const area = $('#attach-preview-area');
-        const bust = '?t=' + Date.now();
-        if (r.attachExt === 'pdf') {
-          area.innerHTML = '<iframe src="/api/attachment' + bust + '#toolbar=0"></iframe>';
-        } else if (['png','jpg','jpeg','gif','webp','svg','bmp'].includes(r.attachExt)) {
-          area.innerHTML = '<img src="/api/attachment' + bust + '" style="max-width:100%;max-height:100%;object-fit:contain;">';
-        } else if (r.attachExt === 'txt' || r.attachExt === 'docx') {
-          area.innerHTML = '<pre>Loading preview...</pre>';
-          fetch('/api/preview').then(resp => {
-            if (resp.status === 204) { area.innerHTML = ''; return; }
-            return resp.text();
-          }).then(text => {
-            if (text) area.innerHTML = '<pre>' + escapeHtml(text) + '</pre>';
-          }).catch(() => { area.innerHTML = ''; });
-        } else {
-          area.innerHTML = '';
-        }
+        setAttachmentPreview(r);
       }
     } else {
       $('#attach-card').classList.add('hidden');
+      clearNode($('#attach-info'));
+      clearNode($('#attach-preview-area'));
+      attachCacheKey = '';
     }
 
     if (data.state === 'error' && data.error) {
@@ -204,17 +318,6 @@
     else if (sent) { st.className = 'status-sent'; st.textContent = 'Sent!'; }
     else if (isError) { st.className = 'status-error'; st.textContent = 'Failed'; }
     else { st.textContent = ''; }
-  }
-
-  function escapeHtml(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-  }
-
-  function escapeForSrcdoc(s) {
-    if (/<[a-z][\s\S]*>/i.test(s)) return s;
-    return '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;">' + escapeHtml(s) + '</pre>';
   }
 
   $('#btn-send').onclick = () => { if (!$('#btn-send').disabled) fetch('/api/send', {method:'POST'}); };

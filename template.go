@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 var tmplRe = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
@@ -31,23 +32,102 @@ func hasUnresolved(s string) []string {
 }
 
 type Recipient struct {
-	Row     int
-	Address string
-	Subject string
-	Body    string
-	Attach  string
-	Command string
-	Status  string
+	Row         int
+	Address     string
+	Subject     string
+	Body        string
+	Attach      string
+	AttachPath  string
+	Command     string
+	CommandArgs []string
+	Status      string
+}
+
+func splitCommandLine(input string) ([]string, error) {
+	var parts []string
+	var current strings.Builder
+	tokenStarted := false
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	flush := func() {
+		if !tokenStarted {
+			return
+		}
+		parts = append(parts, current.String())
+		current.Reset()
+		tokenStarted = false
+	}
+
+	for _, r := range input {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			tokenStarted = true
+			escaped = false
+		case inSingle:
+			if r == '\'' {
+				inSingle = false
+				continue
+			}
+			current.WriteRune(r)
+		case inDouble:
+			switch r {
+			case '"':
+				inDouble = false
+			case '\\':
+				escaped = true
+			default:
+				current.WriteRune(r)
+			}
+		default:
+			if unicode.IsSpace(r) {
+				flush()
+				continue
+			}
+			tokenStarted = true
+			switch r {
+			case '\'':
+				inSingle = true
+			case '"':
+				inDouble = true
+			case '\\':
+				escaped = true
+			default:
+				current.WriteRune(r)
+			}
+		}
+	}
+
+	if escaped {
+		return nil, fmt.Errorf("unterminated escape in command line")
+	}
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote in command line")
+	}
+	flush()
+	return parts, nil
 }
 
 func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl, cmdTmpl string) ([]Recipient, []string) {
 	var recipients []Recipient
 	var errs []string
+	cmdParts, cmdParseErr := splitCommandLine(cmdTmpl)
 
 	for i, row := range rows {
-		status := strings.TrimSpace(row[statusCol])
-		if status == "Sent" {
-			recipients = append(recipients, Recipient{Row: i, Status: "Sent"})
+		status := "Pending"
+		if statusCol >= 0 && statusCol < len(row) {
+			status = strings.TrimSpace(row[statusCol])
+		}
+		if status == "" {
+			status = "Pending"
+		}
+		if status != "Pending" && status != "Sent" && status != "Skipped" {
+			status = "Pending"
+		}
+		if status == "Sent" || status == "Skipped" {
+			recipients = append(recipients, Recipient{Row: i, Status: status})
 			continue
 		}
 
@@ -88,14 +168,26 @@ func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl,
 			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in command template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
 		}
 
+		var resolvedCmdParts []string
+		if cmdParseErr != nil {
+			errs = append(errs, fmt.Sprintf("  Row %d: Invalid command template\n    → Fix executable_commandline_template.txt quoting/escaping: %v", i+1, cmdParseErr))
+		} else {
+			resolvedCmdParts = make([]string, 0, len(cmdParts))
+			for _, part := range cmdParts {
+				resolvedPart, _ := resolveTemplate(part, vars)
+				resolvedCmdParts = append(resolvedCmdParts, resolvedPart)
+			}
+		}
+
 		recipients = append(recipients, Recipient{
-			Row:     i,
-			Address: addr,
-			Subject: subject,
-			Body:    body,
-			Attach:  attach,
-			Command: cmd,
-			Status:  "Pending",
+			Row:         i,
+			Address:     addr,
+			Subject:     subject,
+			Body:        body,
+			Attach:      attach,
+			Command:     cmd,
+			CommandArgs: resolvedCmdParts,
+			Status:      status,
 		})
 	}
 
