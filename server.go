@@ -237,6 +237,13 @@ func openBrowser(url string) {
 	go cmd.Wait()
 }
 
+func resolveRelPath(baseDir, path string) string {
+	if !filepath.IsAbs(path) && baseDir != "" {
+		return filepath.Join(baseDir, path)
+	}
+	return path
+}
+
 func (s *serverState) currentRecipientLocked() (int, Recipient, bool) {
 	if s.cursor < 0 || s.cursor >= len(s.pending) {
 		return -1, Recipient{}, false
@@ -248,26 +255,44 @@ func (s *serverState) currentRecipientLocked() (int, Recipient, bool) {
 	return recIdx, s.app.Recipients[recIdx], true
 }
 
+func (s *serverState) currentRecipientForRequest() (Recipient, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == "done" {
+		return Recipient{}, false
+	}
+	_, rec, ok := s.currentRecipientLocked()
+	return rec, ok
+}
+
 func (s *serverState) resolveAttachPath(rec Recipient, index int) (string, bool) {
 	if index < 0 || index >= len(rec.Attachments) {
 		return "", false
 	}
-	path := rec.Attachments[index]
-	if !filepath.IsAbs(path) && s.app.BaseDir != "" {
-		path = filepath.Join(s.app.BaseDir, path)
+	return resolveRelPath(s.app.BaseDir, rec.Attachments[index]), true
+}
+
+func (s *serverState) setErrorStateLocked(msg string) {
+	s.state = "error"
+	s.lastError = msg
+	s.broadcastStateLocked()
+}
+
+func (s *serverState) requireActionableStateLocked() (int, Recipient, error) {
+	if s.state != "preview" && s.state != "error" {
+		return -1, Recipient{}, fmt.Errorf("not in actionable state")
 	}
-	return path, true
+	recIdx, rec, ok := s.currentRecipientLocked()
+	if !ok {
+		s.state = "done"
+		s.broadcastStateLocked()
+		return -1, Recipient{}, fmt.Errorf("no current recipient")
+	}
+	return recIdx, rec, nil
 }
 
 func (s *serverState) handleAttachment(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.state == "done" {
-		s.mu.Unlock()
-		http.NotFound(w, r)
-		return
-	}
-	_, rec, ok := s.currentRecipientLocked()
-	s.mu.Unlock()
+	rec, ok := s.currentRecipientForRequest()
 	if !ok || len(rec.Attachments) == 0 {
 		http.NotFound(w, r)
 		return
@@ -282,14 +307,7 @@ func (s *serverState) handleAttachment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *serverState) handlePreview(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.state == "done" {
-		s.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	_, rec, ok := s.currentRecipientLocked()
-	s.mu.Unlock()
+	rec, ok := s.currentRecipientForRequest()
 	if !ok || len(rec.Attachments) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -376,10 +394,7 @@ func buildStatus(snapshot statusSnapshot) statusResponse {
 		r := snapshot.recipient
 		var attachments []attachmentJSON
 		for _, a := range r.Attachments {
-			path := a
-			if !filepath.IsAbs(path) && snapshot.baseDir != "" {
-				path = filepath.Join(snapshot.baseDir, path)
-			}
+			path := resolveRelPath(snapshot.baseDir, a)
 			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(a)), ".")
 			attachments = append(attachments, attachmentJSON{
 				Path: a,
@@ -498,11 +513,7 @@ func defaultSendCmd(ctx context.Context, rec Recipient, baseDir string) (string,
 		args = append(args, "--html")
 	}
 	for _, a := range rec.Attachments {
-		path := a
-		if !filepath.IsAbs(path) && baseDir != "" {
-			path = filepath.Join(baseDir, path)
-		}
-		args = append(args, "-a", path)
+		args = append(args, "-a", resolveRelPath(baseDir, a))
 	}
 	cmd := exec.CommandContext(ctx, "gws", args...)
 	return runCommandCombinedLimited(cmd, maxCommandOutputBytes)
@@ -513,17 +524,10 @@ func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	if s.state != "preview" && s.state != "error" {
+	recIdx, rec, err := s.requireActionableStateLocked()
+	if err != nil {
 		s.mu.Unlock()
-		http.Error(w, "not in sendable state", http.StatusConflict)
-		return
-	}
-	recIdx, rec, ok := s.currentRecipientLocked()
-	if !ok {
-		s.state = "done"
-		s.broadcastStateLocked()
-		s.mu.Unlock()
-		http.Error(w, "no current recipient", http.StatusConflict)
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	if rec.Status == "Sent" || (rec.Row >= 0 && rec.Row < len(s.app.Rows) && s.app.StatusCol >= 0 && s.app.StatusCol < len(s.app.Rows[rec.Row]) && s.app.Rows[rec.Row][s.app.StatusCol] == "Sent") {
@@ -555,16 +559,12 @@ func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 		defer s.mu.Unlock()
 
 		if err != nil {
-			s.state = "error"
-			s.lastError = formatCommandError(err, output)
-			s.broadcastStateLocked()
+			s.setErrorStateLocked(formatCommandError(err, output))
 			return
 		}
 
 		if rec.Row < 0 || rec.Row >= len(s.app.Rows) || s.app.StatusCol < 0 || s.app.StatusCol >= len(s.app.Rows[rec.Row]) {
-			s.state = "error"
-			s.lastError = "email sent but failed to update in-memory status"
-			s.broadcastStateLocked()
+			s.setErrorStateLocked("email sent but failed to update in-memory status")
 			return
 		}
 
@@ -573,9 +573,7 @@ func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 		s.sentRun++
 		s.sentEver++
 		if err := saveCSV(s.app.CSVPath, s.app.Headers, s.app.Rows); err != nil {
-			s.state = "error"
-			s.lastError = fmt.Sprintf("email sent but failed to update CSV: %v\nUse Skip to continue without resending.", err)
-			s.broadcastStateLocked()
+			s.setErrorStateLocked(fmt.Sprintf("email sent but failed to update CSV: %v\nUse Skip to continue without resending.", err))
 			return
 		}
 
@@ -598,15 +596,9 @@ func (s *serverState) handleSkip(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state != "preview" && s.state != "error" {
-		http.Error(w, "not in skippable state", http.StatusConflict)
-		return
-	}
-	recIdx, rec, ok := s.currentRecipientLocked()
-	if !ok {
-		s.state = "done"
-		s.broadcastStateLocked()
-		http.Error(w, "no current recipient", http.StatusConflict)
+	recIdx, rec, err := s.requireActionableStateLocked()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	if rec.Status == "Sent" {
@@ -615,18 +607,14 @@ func (s *serverState) handleSkip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rec.Row < 0 || rec.Row >= len(s.app.Rows) || s.app.StatusCol < 0 || s.app.StatusCol >= len(s.app.Rows[rec.Row]) {
-		s.state = "error"
-		s.lastError = "failed to update in-memory status"
-		s.broadcastStateLocked()
+		s.setErrorStateLocked("failed to update in-memory status")
 		http.Error(w, "failed to update in-memory status", http.StatusInternalServerError)
 		return
 	}
 	s.app.Rows[rec.Row][s.app.StatusCol] = "Skipped"
 	s.app.Recipients[recIdx].Status = "Skipped"
 	if err := saveCSV(s.app.CSVPath, s.app.Headers, s.app.Rows); err != nil {
-		s.state = "error"
-		s.lastError = fmt.Sprintf("failed to update CSV: %v", err)
-		s.broadcastStateLocked()
+		s.setErrorStateLocked(fmt.Sprintf("failed to update CSV: %v", err))
 		http.Error(w, "failed to update CSV", http.StatusInternalServerError)
 		return
 	}

@@ -90,7 +90,9 @@ auto-email/
 
 ### Dependencies
 
-Stdlib only: `net/http`, `encoding/csv`, `encoding/json`, `os/exec`, `regexp`, `net/mail`, `archive/zip`, `encoding/xml`, `os`, `fmt`, `strings`, `time`, `io`, `path/filepath`, `context`, `sync`, `net`
+Go stdlib: `net/http`, `encoding/csv`, `encoding/json`, `os/exec`, `regexp`, `net/mail`, `os`, `fmt`, `strings`, `time`, `io`, `path/filepath`, `context`, `sync`, `net`
+
+Frontend CDN: [mammoth.js@1.8.0](https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js) for client-side DOCX rendering
 
 ### Key Types
 
@@ -137,11 +139,11 @@ Resolution order per CSV row:
 
 Supported formats:
 - `.pdf` — shells out to `pdftotext` (poppler-utils); falls back gracefully if not installed. Inline iframe preview in web UI.
-- `.txt` — reads file directly, up to 1 MB.
-- `.docx` — DIY parser using stdlib `archive/zip` + `encoding/xml`, extracts `<w:t>` text from `word/document.xml`.
+- `.txt` — reads file directly server-side, up to 1 MB. Rendered in `<pre>` tag.
+- `.docx` — rendered client-side via mammoth.js (fetches raw file from `/api/attachment`, converts to semantic HTML in browser).
 - Images (png/jpg/gif/webp/svg/bmp) — displayed inline via `<img>` tag.
 
-All formats return `""` on any error, which hides the preview.
+All fetch-based previews (DOCX, TXT) use a unified `fetchAttachment()` JS helper with cache-busting and staleness checks.
 
 ### CSV Persistence
 

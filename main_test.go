@@ -38,13 +38,11 @@ func TestReadTemplate(t *testing.T) {
 			t.Fatal("expected error for missing file")
 		}
 	})
-}
 
-func TestReadBodyTemplate(t *testing.T) {
 	t.Run("preserves_internal_newlines", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "b.txt")
 		os.WriteFile(p, []byte("\n  Hello\n\nWorld\n  "), 0644)
-		got, err := readBodyTemplate(p)
+		got, err := readTemplate(p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,10 +51,10 @@ func TestReadBodyTemplate(t *testing.T) {
 		}
 	})
 
-	t.Run("crlf", func(t *testing.T) {
+	t.Run("body_crlf", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "b.txt")
 		os.WriteFile(p, []byte("line1\r\nline2\r\n"), 0644)
-		got, err := readBodyTemplate(p)
+		got, err := readTemplate(p)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -355,7 +353,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bodyTmpl, err := readBodyTemplate(filepath.Join(dir, "email_body_template.txt"))
+	bodyTmpl, err := readTemplate(filepath.Join(dir, "email_body_template.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}

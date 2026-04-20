@@ -60,6 +60,25 @@ func testRecipientN(n int, attachments ...string) Recipient {
 	}
 }
 
+func setupSingleTest(t *testing.T) (*serverState, http.Handler) {
+	t.Helper()
+	attach := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(attach, []byte("x"), 0644)
+	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
+	s := newState(app, []int{0}, 0)
+	return s, newTestServer(t, s)
+}
+
+func setupMultiTest(t *testing.T) (*serverState, http.Handler, string) {
+	t.Helper()
+	attach := filepath.Join(t.TempDir(), "f.txt")
+	os.WriteFile(attach, []byte("x"), 0644)
+	rs := []Recipient{testRecipientN(0, attach), testRecipientN(1, attach)}
+	app, _ := makeTestApp(t, rs)
+	s := newState(app, []int{0, 1}, 0)
+	return s, newTestServer(t, s), attach
+}
+
 func minimalPDF(text string) []byte {
 	streamContent := fmt.Sprintf("BT /F1 12 Tf (%s) Tj ET", text)
 	var buf bytes.Buffer
@@ -218,11 +237,7 @@ func (w *sseTestWriter) BodyString() string {
 // --- Status Endpoint ---
 
 func TestStatusEndpoint(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	sr := getStatus(t, ts)
 	if sr.State != "preview" {
@@ -242,11 +257,7 @@ func TestStatusEndpoint(t *testing.T) {
 // --- Send Transitions ---
 
 func TestSendTransition(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	resp := postAction(t, ts, "/api/send")
 	resp.Body.Close()
@@ -261,16 +272,12 @@ func TestSendTransition(t *testing.T) {
 }
 
 func TestSendSuccess(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	s, ts := setupSingleTest(t)
 
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
 
-	_, rows, err := loadCSV(app.CSVPath)
+	_, rows, err := loadCSV(s.app.CSVPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,15 +287,10 @@ func TestSendSuccess(t *testing.T) {
 }
 
 func TestSendError(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	r := testRecipient(attach)
-	app, _ := makeTestApp(t, []Recipient{r})
-	s := newState(app, []int{0}, 0)
+	s, ts := setupSingleTest(t)
 	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
 		return "", fmt.Errorf("send failed")
 	}
-	ts := newTestServer(t, s)
 
 	postAction(t, ts, "/api/send").Body.Close()
 	sr := waitForState(t, ts, "error", 5*time.Second)
@@ -307,12 +309,8 @@ func TestFormatCommandError(t *testing.T) {
 }
 
 func TestSendCSVWriteFailure(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	app.CSVPath = "/dev/null/impossible"
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	s, ts := setupSingleTest(t)
+	s.app.CSVPath = "/dev/null/impossible"
 
 	postAction(t, ts, "/api/send").Body.Close()
 	sr := waitForState(t, ts, "error", 5*time.Second)
@@ -322,14 +320,9 @@ func TestSendCSVWriteFailure(t *testing.T) {
 }
 
 func TestRetryAfterError(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	r := testRecipient(attach)
-	app, _ := makeTestApp(t, []Recipient{r})
-	s := newState(app, []int{0}, 0)
+	s, ts := setupSingleTest(t)
 	s.state = "error"
 	s.lastError = "previous error"
-	ts := newTestServer(t, s)
 
 	resp := postAction(t, ts, "/api/send")
 	resp.Body.Close()
@@ -341,12 +334,8 @@ func TestRetryAfterError(t *testing.T) {
 }
 
 func TestSkipWhileSentConflicts(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
+	s, ts := setupSingleTest(t)
 	s.state = "sent"
-	ts := newTestServer(t, s)
 
 	resp := postAction(t, ts, "/api/skip")
 	resp.Body.Close()
@@ -356,16 +345,11 @@ func TestSkipWhileSentConflicts(t *testing.T) {
 }
 
 func TestSendWhileSending409(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	r := testRecipient(attach)
-	app, _ := makeTestApp(t, []Recipient{r})
-	s := newState(app, []int{0}, 0)
+	s, ts := setupSingleTest(t)
 	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
 		time.Sleep(2 * time.Second)
 		return "", nil
 	}
-	ts := newTestServer(t, s)
 
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sending", 2*time.Second)
@@ -378,11 +362,7 @@ func TestSendWhileSending409(t *testing.T) {
 }
 
 func TestSendRejectsRequestBody(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	resp := doRequestBody(t, ts, http.MethodPost, "/api/send", []byte("x"))
 	defer resp.Body.Close()
@@ -392,11 +372,7 @@ func TestSendRejectsRequestBody(t *testing.T) {
 }
 
 func TestSkipRejectsLargeRequestBody(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	resp := doRequestBody(t, ts, http.MethodPost, "/api/skip", []byte("too much"))
 	defer resp.Body.Close()
@@ -408,12 +384,7 @@ func TestSkipRejectsLargeRequestBody(t *testing.T) {
 // --- Skip ---
 
 func TestSkipAdvances(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	rs := []Recipient{testRecipientN(0, attach), testRecipientN(1, attach)}
-	app, _ := makeTestApp(t, rs)
-	s := newState(app, []int{0, 1}, 0)
-	ts := newTestServer(t, s)
+	s, ts, _ := setupMultiTest(t)
 
 	postAction(t, ts, "/api/skip").Body.Close()
 	sr := getStatus(t, ts)
@@ -424,18 +395,14 @@ func TestSkipAdvances(t *testing.T) {
 		t.Errorf("current = %d, want 2", sr.Progress.Current)
 	}
 
-	_, rows, _ := loadCSV(app.CSVPath)
+	_, rows, _ := loadCSV(s.app.CSVPath)
 	if rows[0][1] != "Skipped" {
 		t.Errorf("row 0 status = %q, want Skipped", rows[0][1])
 	}
 }
 
 func TestSkipLastToDone(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	s, ts := setupSingleTest(t)
 
 	postAction(t, ts, "/api/skip").Body.Close()
 	sr := getStatus(t, ts)
@@ -443,7 +410,7 @@ func TestSkipLastToDone(t *testing.T) {
 		t.Errorf("state = %q, want done", sr.State)
 	}
 
-	_, rows, _ := loadCSV(app.CSVPath)
+	_, rows, _ := loadCSV(s.app.CSVPath)
 	if rows[0][1] != "Skipped" {
 		t.Errorf("row 0 status = %q, want Skipped", rows[0][1])
 	}
@@ -458,12 +425,7 @@ func TestSkipLastToDone(t *testing.T) {
 // --- Auto-advance ---
 
 func TestAutoAdvance(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	rs := []Recipient{testRecipientN(0, attach), testRecipientN(1, attach)}
-	app, _ := makeTestApp(t, rs)
-	s := newState(app, []int{0, 1}, 0)
-	ts := newTestServer(t, s)
+	_, ts, _ := setupMultiTest(t)
 
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
@@ -478,11 +440,7 @@ func TestAutoAdvance(t *testing.T) {
 }
 
 func TestAutoAdvanceDone(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
@@ -614,25 +572,17 @@ func min(a, b int) int {
 // --- Full Flow ---
 
 func TestFullFlowHTTP(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	rs := []Recipient{testRecipientN(0, attach), testRecipientN(1, attach)}
-	app, _ := makeTestApp(t, rs)
-	s := newState(app, []int{0, 1}, 0)
-	ts := newTestServer(t, s)
+	s, ts, _ := setupMultiTest(t)
 
-	// Send first
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
 	waitForState(t, ts, "preview", 5*time.Second)
 
-	// Send second
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
 	waitForState(t, ts, "done", 5*time.Second)
 
-	// Verify CSV
-	_, rows, err := loadCSV(app.CSVPath)
+	_, rows, err := loadCSV(s.app.CSVPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,11 +594,7 @@ func TestFullFlowHTTP(t *testing.T) {
 }
 
 func TestFullFlowErrorRetry(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	r := testRecipient(attach)
-	app, _ := makeTestApp(t, []Recipient{r})
-	s := newState(app, []int{0}, 0)
+	s, ts := setupSingleTest(t)
 	callCount := 0
 	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
 		callCount++
@@ -657,17 +603,14 @@ func TestFullFlowErrorRetry(t *testing.T) {
 		}
 		return "", nil
 	}
-	ts := newTestServer(t, s)
 
-	// Send → error
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "error", 5*time.Second)
 
-	// Retry
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
 
-	_, rows, _ := loadCSV(app.CSVPath)
+	_, rows, _ := loadCSV(s.app.CSVPath)
 	if rows[0][1] != "Sent" {
 		t.Errorf("CSV status = %q, want Sent", rows[0][1])
 	}
@@ -676,11 +619,7 @@ func TestFullFlowErrorRetry(t *testing.T) {
 // --- SSE ---
 
 func TestSSEStream(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -713,11 +652,7 @@ func TestSSEStream(t *testing.T) {
 // --- Index ---
 
 func TestIndexServesHTML(t *testing.T) {
-	attach := filepath.Join(t.TempDir(), "f.txt")
-	os.WriteFile(attach, []byte("x"), 0644)
-	app, _ := makeTestApp(t, []Recipient{testRecipient(attach)})
-	s := newState(app, []int{0}, 0)
-	ts := newTestServer(t, s)
+	_, ts := setupSingleTest(t)
 
 	resp := doRequest(t, ts, http.MethodGet, "/")
 	defer resp.Body.Close()

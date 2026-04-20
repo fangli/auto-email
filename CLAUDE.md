@@ -24,7 +24,8 @@ Single `main` package. Web-based UI served from an embedded HTML file.
 
 ## Dependencies
 
-- Stdlib only: `net/http`, `encoding/csv`, `encoding/json`, `os/exec`, `regexp`, `net/mail`, `archive/zip`, `encoding/xml`
+- Go stdlib: `net/http`, `encoding/csv`, `encoding/json`, `os/exec`, `regexp`, `net/mail`
+- Frontend CDN: [mammoth.js](https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js) for DOCX preview rendering
 
 ## Key Design Decisions
 
@@ -33,6 +34,6 @@ Single `main` package. Web-based UI served from an embedded HTML file.
 - `gws` installation and authentication are validated at startup with clear guidance if missing.
 - CSV is the persistence layer. `_status` column is added automatically if missing. Entire CSV is rewritten on each status update via atomic temp-file rename.
 - Attachments are optional and support multiple files (comma-separated in template). Each gets `-a path` in the gws command.
-- PDF extraction shells out to `pdftotext` (poppler-utils) for quality. Falls back gracefully if not installed.
-- DOCX extraction uses stdlib `archive/zip` + `encoding/xml` — zero external dependencies.
+- PDF preview shells out to `pdftotext` (poppler-utils). Falls back gracefully if not installed.
+- DOCX preview uses mammoth.js client-side (fetches raw file via `/api/attachment`, renders to HTML in browser).
 - `sendCmdFunc` field on `serverState` allows test injection of mock send commands.

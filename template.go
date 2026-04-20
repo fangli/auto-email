@@ -50,6 +50,14 @@ func splitAttachments(raw string) []string {
 	return result
 }
 
+func resolveField(tmpl string, vars map[string]string, row int, field string) (string, string) {
+	result, missing := resolveTemplate(tmpl, vars)
+	if len(missing) > 0 {
+		return result, fmt.Sprintf("  Row %d: Unresolved variables in %s template: %s\n    → Ensure these columns exist in the CSV: %s", row+1, field, strings.Join(missing, ", "), strings.Join(missing, ", "))
+	}
+	return result, ""
+}
+
 func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl string) ([]Recipient, []string) {
 	var recipients []Recipient
 	var errs []string
@@ -77,24 +85,21 @@ func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl,
 			}
 		}
 
-		addr, missing := resolveTemplate(addrTmpl, vars)
-		if len(missing) > 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in address template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
+		addr, errMsg := resolveField(addrTmpl, vars, i, "address")
+		if errMsg != "" {
+			errs = append(errs, errMsg)
 		}
-
-		subject, missing := resolveTemplate(subjectTmpl, vars)
-		if len(missing) > 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in subject template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
+		subject, errMsg := resolveField(subjectTmpl, vars, i, "subject")
+		if errMsg != "" {
+			errs = append(errs, errMsg)
 		}
-
-		body, missing := resolveTemplate(bodyTmpl, vars)
-		if len(missing) > 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in body template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
+		body, errMsg := resolveField(bodyTmpl, vars, i, "body")
+		if errMsg != "" {
+			errs = append(errs, errMsg)
 		}
-
-		attach, missing := resolveTemplate(attachTmpl, vars)
-		if len(missing) > 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in attachment template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
+		attach, errMsg := resolveField(attachTmpl, vars, i, "attachment")
+		if errMsg != "" {
+			errs = append(errs, errMsg)
 		}
 
 		recipients = append(recipients, Recipient{

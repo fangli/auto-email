@@ -222,6 +222,26 @@ Finance Team</code></pre>
     return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;padding:12px;margin:0;color:#333;line-height:1.6;}table{border-collapse:collapse;}td,th{border:1px solid #ddd;padding:6px;vertical-align:top;}blockquote{border-left:3px solid #ddd;margin:0;padding-left:12px;color:#555;}pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}</style></head><body>' + bodyMarkup(body) + '</body></html>';
   }
 
+  function fetchAttachment(url, onSuccess, onError) {
+    const area = $('#attach-preview-area');
+    const loading = document.createElement('pre');
+    loading.textContent = 'Loading preview...';
+    area.appendChild(loading);
+    const key = attachCacheKey + ':' + attachIndex;
+    const stale = () => attachCacheKey + ':' + attachIndex !== key;
+    fetch(url)
+      .then(resp => {
+        if (stale()) return null;
+        if (resp.status === 204) { clearNode(area); return null; }
+        return onSuccess(resp);
+      })
+      .catch(() => {
+        if (stale()) return;
+        if (onError) onError();
+        else clearNode(area);
+      });
+  }
+
   function showAttachment() {
     const a = attachments[attachIndex];
     if (!a) return;
@@ -261,52 +281,35 @@ Finance Team</code></pre>
       return;
     }
     if (a.ext === 'docx') {
-      const loading = document.createElement('pre');
-      loading.textContent = 'Loading preview...';
-      area.appendChild(loading);
-      const key = attachCacheKey + ':' + attachIndex;
-      fetch('/api/attachment' + bust)
-        .then(resp => {
-          if (attachCacheKey + ':' + attachIndex !== key) return null;
-          return resp.arrayBuffer();
-        })
-        .then(buf => {
-          if (!buf || attachCacheKey + ':' + attachIndex !== key) return null;
-          return mammoth.convertToHtml({arrayBuffer: buf});
-        })
-        .then(result => {
-          if (!result || attachCacheKey + ':' + attachIndex !== key) return;
-          clearNode(area);
-          const div = document.createElement('div');
-          div.className = 'docx-preview';
-          div.innerHTML = result.value;
-          area.appendChild(div);
-        })
-        .catch(() => {
-          if (attachCacheKey + ':' + attachIndex !== key) return;
+      fetchAttachment('/api/attachment' + bust, resp =>
+        resp.arrayBuffer()
+          .then(buf => mammoth.convertToHtml({arrayBuffer: buf}))
+          .then(result => {
+            clearNode(area);
+            const div = document.createElement('div');
+            div.className = 'docx-preview';
+            div.innerHTML = result.value;
+            area.appendChild(div);
+          }),
+        () => {
           clearNode(area);
           const pre = document.createElement('pre');
           pre.textContent = 'Could not preview this file.';
           area.appendChild(pre);
-        });
+        }
+      );
       return;
     }
     if (a.ext === 'txt') {
-      const loading = document.createElement('pre');
-      loading.textContent = 'Loading preview...';
-      area.appendChild(loading);
-      const key = attachCacheKey + ':' + attachIndex;
-      fetch('/api/preview?index=' + attachIndex).then(resp => {
-        if (attachCacheKey + ':' + attachIndex !== key) return null;
-        if (resp.status === 204) { clearNode(area); return null; }
-        return resp.text();
-      }).then(text => {
-        if (!text || attachCacheKey + ':' + attachIndex !== key) return;
-        clearNode(area);
-        const pre = document.createElement('pre');
-        pre.textContent = text;
-        area.appendChild(pre);
-      }).catch(() => clearNode(area));
+      fetchAttachment('/api/preview' + bust, resp =>
+        resp.text().then(text => {
+          if (!text) return;
+          clearNode(area);
+          const pre = document.createElement('pre');
+          pre.textContent = text;
+          area.appendChild(pre);
+        })
+      );
     }
   }
 

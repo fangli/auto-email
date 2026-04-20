@@ -39,13 +39,6 @@ func readTemplate(path string) (string, error) {
 	return strings.TrimSpace(s), nil
 }
 
-func readBodyTemplate(path string) (string, error) {
-	s, err := readFile(path)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimRight(strings.TrimLeft(s, " \t\r\n"), " \t\r\n"), nil
-}
 
 func loadCSV(path string) ([]string, [][]string, error) {
 	f, err := os.Open(path)
@@ -250,7 +243,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	bodyTmpl, err := readBodyTemplate("email_body_template.txt")
+	bodyTmpl, err := readTemplate("email_body_template.txt")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
