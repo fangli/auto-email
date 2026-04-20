@@ -187,7 +187,7 @@ func TestValidate(t *testing.T) {
 
 	t.Run("valid", func(t *testing.T) {
 		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: attach, Command: "echo test", Status: "Pending"}}
+		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attachments: []string{attach}, Status: "Pending"}}
 		errs := validate(baseDir, recipients)
 		if len(errs) > 0 {
 			t.Errorf("unexpected errors: %v", errs)
@@ -195,9 +195,8 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("invalid_email", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "not-an-email", Attach: attach, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
+		recipients := []Recipient{{Row: 0, Address: "not-an-email", Status: "Pending"}}
+		errs := validate(t.TempDir(), recipients)
 		if len(errs) == 0 {
 			t.Fatal("expected error for invalid email")
 		}
@@ -207,9 +206,8 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("empty_email", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "", Attach: attach, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
+		recipients := []Recipient{{Row: 0, Address: "", Status: "Pending"}}
+		errs := validate(t.TempDir(), recipients)
 		if len(errs) == 0 {
 			t.Fatal("expected error for empty email")
 		}
@@ -218,7 +216,7 @@ func TestValidate(t *testing.T) {
 	t.Run("missing_attachment", func(t *testing.T) {
 		baseDir := t.TempDir()
 		missing := filepath.Join(baseDir, "missing.pdf")
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: missing, Command: "echo test", Status: "Pending"}}
+		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attachments: []string{missing}, Status: "Pending"}}
 		errs := validate(baseDir, recipients)
 		if len(errs) == 0 {
 			t.Fatal("expected error for missing attachment")
@@ -231,10 +229,8 @@ func TestValidate(t *testing.T) {
 	t.Run("directory_attachment", func(t *testing.T) {
 		baseDir := t.TempDir()
 		attachDir := filepath.Join(baseDir, "attachments")
-		if err := os.Mkdir(attachDir, 0755); err != nil {
-			t.Fatal(err)
-		}
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: attachDir, Command: "echo test", Status: "Pending"}}
+		os.Mkdir(attachDir, 0755)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attachments: []string{attachDir}, Status: "Pending"}}
 		errs := validate(baseDir, recipients)
 		if len(errs) == 0 {
 			t.Fatal("expected error for directory attachment")
@@ -244,55 +240,17 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("missing_command", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: attach, Command: "nonexistent_xyz_cmd arg1", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) == 0 {
-			t.Fatal("expected error for missing command")
-		}
-		if !strings.Contains(errs[0], "not found on PATH") {
-			t.Errorf("error should mention not found on PATH: %s", errs[0])
-		}
-	})
-
-	t.Run("empty_command", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: attach, Command: "", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) == 0 {
-			t.Fatal("expected error for empty command")
-		}
-		if !strings.Contains(errs[0], "empty") {
-			t.Errorf("error should mention empty: %s", errs[0])
-		}
-	})
-
-	t.Run("unresolved_vars", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: attach, Command: "echo {{missing}}", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) == 0 {
-			t.Fatal("expected error for unresolved vars")
-		}
-		if !strings.Contains(errs[0], "Unresolved") {
-			t.Errorf("error should mention Unresolved: %s", errs[0])
-		}
-	})
-
 	t.Run("comma_separated_emails", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com,b@test.com, c@test.com", Attach: attach, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com,b@test.com, c@test.com", Status: "Pending"}}
+		errs := validate(t.TempDir(), recipients)
 		if len(errs) > 0 {
 			t.Errorf("unexpected errors: %v", errs)
 		}
 	})
 
 	t.Run("comma_separated_one_invalid", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com, not-valid, b@test.com", Attach: attach, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com, not-valid, b@test.com", Status: "Pending"}}
+		errs := validate(t.TempDir(), recipients)
 		if len(errs) == 0 {
 			t.Fatal("expected error for invalid email in list")
 		}
@@ -301,28 +259,10 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("comma_separated_all_invalid", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "bad1, bad2", Attach: attach, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) != 2 {
-			t.Errorf("expected 2 errors for 2 bad addresses, got %d: %v", len(errs), errs)
-		}
-	})
-
-	t.Run("trailing_comma_ignored", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{{Row: 0, Address: "a@test.com,", Attach: attach, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) > 0 {
-			t.Errorf("trailing comma should be ignored, got errors: %v", errs)
-		}
-	})
-
 	t.Run("sent_skipped", func(t *testing.T) {
 		recipients := []Recipient{
-			{Row: 0, Address: "bad", Attach: "/missing", Command: "", Status: "Sent"},
-			{Row: 1, Address: "bad", Attach: "/missing", Command: "", Status: "Skipped"},
+			{Row: 0, Address: "bad", Attachments: []string{"/missing"}, Status: "Sent"},
+			{Row: 1, Address: "bad", Attachments: []string{"/missing"}, Status: "Skipped"},
 		}
 		errs := validate(t.TempDir(), recipients)
 		if len(errs) > 0 {
@@ -330,76 +270,22 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("multiple_errors", func(t *testing.T) {
-		baseDir := t.TempDir()
-		recipients := []Recipient{{Row: 0, Address: "bad", Attach: filepath.Join(baseDir, "missing", "file"), Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) < 2 {
-			t.Errorf("expected at least 2 errors, got %d: %v", len(errs), errs)
-		}
-	})
-
-	t.Run("command_lookup_cached", func(t *testing.T) {
-		baseDir, attach := makeAttachment(t)
-		recipients := []Recipient{
-			{Row: 0, Address: "a@test.com", Attach: attach, Command: "nonexistent_xyz_cmd arg1", Status: "Pending"},
-			{Row: 1, Address: "b@test.com", Attach: attach, Command: "nonexistent_xyz_cmd arg2", Status: "Pending"},
-		}
-		errs := validate(baseDir, recipients)
-		cmdErrs := 0
-		for _, e := range errs {
-			if strings.Contains(e, "not found on PATH") {
-				cmdErrs++
-			}
-		}
-		if cmdErrs != 1 {
-			t.Errorf("expected 1 command error (cached), got %d", cmdErrs)
-		}
-	})
-
 	t.Run("empty_attachment_allowed", func(t *testing.T) {
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: "", Command: "echo test", Status: "Pending"}}
+		recipients := []Recipient{{Row: 0, Address: "a@test.com", Status: "Pending"}}
 		errs := validate(t.TempDir(), recipients)
 		if len(errs) > 0 {
 			t.Errorf("unexpected errors for empty attachment: %v", errs)
 		}
 	})
 
-	t.Run("attachment_outside_base_rejected", func(t *testing.T) {
-		baseDir := t.TempDir()
-		outsideDir := t.TempDir()
-		outsidePath := filepath.Join(outsideDir, "attach.pdf")
-		if err := os.WriteFile(outsidePath, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: outsidePath, Command: "echo test", Status: "Pending"}}
+	t.Run("multiple_attachments", func(t *testing.T) {
+		baseDir, attach := makeAttachment(t)
+		attach2 := filepath.Join(baseDir, "second.txt")
+		os.WriteFile(attach2, []byte("data"), 0644)
+		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attachments: []string{attach, attach2}, Status: "Pending"}}
 		errs := validate(baseDir, recipients)
-		if len(errs) == 0 {
-			t.Fatal("expected error for attachment outside base directory")
-		}
-		if !strings.Contains(errs[0], "outside the CSV workspace") {
-			t.Errorf("unexpected error: %s", errs[0])
-		}
-	})
-
-	t.Run("workspace_symlink_to_outside_rejected", func(t *testing.T) {
-		baseDir := t.TempDir()
-		outsideDir := t.TempDir()
-		outsidePath := filepath.Join(outsideDir, "attach.pdf")
-		if err := os.WriteFile(outsidePath, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		linkPath := filepath.Join(baseDir, "linked.pdf")
-		if err := os.Symlink(outsidePath, linkPath); err != nil {
-			t.Skipf("symlink creation not permitted: %v", err)
-		}
-		recipients := []Recipient{{Row: 0, Address: "a@test.com", Attach: linkPath, Command: "echo test", Status: "Pending"}}
-		errs := validate(baseDir, recipients)
-		if len(errs) == 0 {
-			t.Fatal("expected error for symlink escaping workspace")
-		}
-		if !strings.Contains(errs[0], "outside the CSV workspace") {
-			t.Errorf("unexpected error: %s", errs[0])
+		if len(errs) > 0 {
+			t.Errorf("unexpected errors: %v", errs)
 		}
 	})
 }
@@ -455,14 +341,13 @@ func TestBootstrapIntegration(t *testing.T) {
 	os.WriteFile(attachPath, []byte("pdf content"), 0644)
 
 	os.WriteFile(filepath.Join(dir, "email_recipients.csv"), []byte("name,email,_status\nAlice,alice@test.com,Pending\nBob,bob@test.com,Pending\nCarol,carol@test.com,Sent\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "email_address_template.txt"), []byte("{{email}}"), 0644)
+	os.WriteFile(filepath.Join(dir, "email_recipient_template.txt"), []byte("{{email}}"), 0644)
 	os.WriteFile(filepath.Join(dir, "email_subject_template.txt"), []byte("Invoice for {{name}}"), 0644)
 	os.WriteFile(filepath.Join(dir, "email_body_template.txt"), []byte("Dear {{name}},\n\nPlease find attached.\n\nRegards"), 0644)
 	os.WriteFile(filepath.Join(dir, "email_attachment_template.txt"), []byte(attachPath), 0644)
-	os.WriteFile(filepath.Join(dir, "executable_commandline_template.txt"), []byte("echo {{_address}} {{_subject}}"), 0644)
 
 	csvPath := filepath.Join(dir, "email_recipients.csv")
-	addrTmpl, err := readTemplate(filepath.Join(dir, "email_address_template.txt"))
+	addrTmpl, err := readTemplate(filepath.Join(dir, "email_recipient_template.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,10 +363,6 @@ func TestBootstrapIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdTmpl, err := readTemplate(filepath.Join(dir, "executable_commandline_template.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	headers, rows, err := loadCSV(csvPath)
 	if err != nil {
@@ -493,7 +374,7 @@ func TestBootstrapIntegration(t *testing.T) {
 		t.Fatal("_status column should exist")
 	}
 
-	recipients, buildErrs := buildRecipients(headers, rows, statusCol, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl, cmdTmpl)
+	recipients, buildErrs := buildRecipients(headers, rows, statusCol, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl)
 	if len(buildErrs) > 0 {
 		t.Fatalf("build errors: %v", buildErrs)
 	}
@@ -529,7 +410,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	if !strings.Contains(recipients[0].Body, "Dear Alice") {
 		t.Errorf("first body = %q", recipients[0].Body)
 	}
-	if recipients[0].Command != "echo alice@test.com Invoice for Alice" {
-		t.Errorf("first command = %q", recipients[0].Command)
+	if len(recipients[0].Attachments) != 1 || recipients[0].Attachments[0] != attachPath {
+		t.Errorf("first attachments = %v, want [%s]", recipients[0].Attachments, attachPath)
 	}
 }

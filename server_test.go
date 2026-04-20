@@ -20,8 +20,8 @@ func makeTestApp(t *testing.T, recipients []Recipient) (*AppData, string) {
 	t.Helper()
 	dir := t.TempDir()
 	for _, r := range recipients {
-		if strings.TrimSpace(r.Attach) != "" {
-			dir = filepath.Dir(r.Attach)
+		if len(r.Attachments) > 0 {
+			dir = filepath.Dir(r.Attachments[0])
 			break
 		}
 	}
@@ -46,17 +46,17 @@ func makeTestApp(t *testing.T, recipients []Recipient) (*AppData, string) {
 	}, dir
 }
 
-func testRecipient(attach string) Recipient {
+func testRecipient(attachments ...string) Recipient {
 	return Recipient{
 		Row: 0, Address: "alice@test.com", Subject: "Hello",
-		Body: "Test body", Attach: attach, Command: "echo test", Status: "Pending",
+		Body: "Test body", Attachments: attachments, Status: "Pending",
 	}
 }
 
-func testRecipientN(n int, attach string) Recipient {
+func testRecipientN(n int, attachments ...string) Recipient {
 	return Recipient{
 		Row: n, Address: fmt.Sprintf("user%d@test.com", n), Subject: fmt.Sprintf("Subject %d", n),
-		Body: "Body", Attach: attach, Command: "echo test", Status: "Pending",
+		Body: "Body", Attachments: attachments, Status: "Pending",
 	}
 }
 
@@ -116,6 +116,9 @@ func newState(app *AppData, pending []int, sentEver int) *serverState {
 		done:     make(chan struct{}),
 		ctx:      ctx,
 		cancel:   cancel,
+		sendCmdFunc: func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
+			return "", nil
+		},
 	}
 }
 
@@ -280,9 +283,11 @@ func TestSendError(t *testing.T) {
 	attach := filepath.Join(t.TempDir(), "f.txt")
 	os.WriteFile(attach, []byte("x"), 0644)
 	r := testRecipient(attach)
-	r.Command = "false"
 	app, _ := makeTestApp(t, []Recipient{r})
 	s := newState(app, []int{0}, 0)
+	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
+		return "", fmt.Errorf("send failed")
+	}
 	ts := newTestServer(t, s)
 
 	postAction(t, ts, "/api/send").Body.Close()
@@ -354,9 +359,12 @@ func TestSendWhileSending409(t *testing.T) {
 	attach := filepath.Join(t.TempDir(), "f.txt")
 	os.WriteFile(attach, []byte("x"), 0644)
 	r := testRecipient(attach)
-	r.Command = "sleep 2"
 	app, _ := makeTestApp(t, []Recipient{r})
 	s := newState(app, []int{0}, 0)
+	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
+		time.Sleep(2 * time.Second)
+		return "", nil
+	}
 	ts := newTestServer(t, s)
 
 	postAction(t, ts, "/api/send").Body.Close()
@@ -522,7 +530,7 @@ func TestPreviewEndpointTxt(t *testing.T) {
 	}
 }
 
-func TestPreviewEndpointDocx(t *testing.T) {
+func TestPreviewEndpointDocx204(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "doc.docx")
 	os.WriteFile(f, minimalDocx("Hello from docx"), 0644)
 	app, _ := makeTestApp(t, []Recipient{testRecipient(f)})
@@ -531,13 +539,8 @@ func TestPreviewEndpointDocx(t *testing.T) {
 
 	resp := doRequest(t, ts, http.MethodGet, "/api/preview")
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
-	}
-	var buf bytes.Buffer
-	buf.ReadFrom(resp.Body)
-	if !strings.Contains(buf.String(), "Hello from docx") {
-		t.Errorf("body = %q", buf.String())
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
 	}
 }
 
@@ -599,19 +602,6 @@ func TestExtractPreviewText(t *testing.T) {
 			t.Errorf("preview length = %d, unexpectedly large", len(got))
 		}
 	})
-	t.Run("docx_returns_text", func(t *testing.T) {
-		f := filepath.Join(t.TempDir(), "doc.docx")
-		os.WriteFile(f, minimalDocx("Hello from docx"), 0644)
-		got := extractPreviewText(f)
-		if !strings.Contains(got, "Hello from docx") {
-			t.Errorf("expected 'Hello from docx', got %q", got)
-		}
-	})
-	t.Run("docx_nonexistent_returns_empty", func(t *testing.T) {
-		if got := extractPreviewText("/no/such/file.docx"); got != "" {
-			t.Errorf("expected empty, got %q", got)
-		}
-	})
 }
 
 func min(a, b int) int {
@@ -657,21 +647,23 @@ func TestFullFlowErrorRetry(t *testing.T) {
 	attach := filepath.Join(t.TempDir(), "f.txt")
 	os.WriteFile(attach, []byte("x"), 0644)
 	r := testRecipient(attach)
-	r.Command = "false"
 	app, _ := makeTestApp(t, []Recipient{r})
 	s := newState(app, []int{0}, 0)
+	callCount := 0
+	s.sendCmdFunc = func(ctx context.Context, rec Recipient, baseDir string) (string, error) {
+		callCount++
+		if callCount == 1 {
+			return "", fmt.Errorf("send failed")
+		}
+		return "", nil
+	}
 	ts := newTestServer(t, s)
 
 	// Send → error
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "error", 5*time.Second)
 
-	// Fix command and retry
-	s.mu.Lock()
-	s.app.Recipients[0].Command = "echo test"
-	s.app.Recipients[0].CommandArgs = nil
-	s.mu.Unlock()
-
+	// Retry
 	postAction(t, ts, "/api/send").Body.Close()
 	waitForState(t, ts, "sent", 5*time.Second)
 

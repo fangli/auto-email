@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 var tmplRe = regexp.MustCompile(`\{\{\s*(\w+)\s*\}\}`)
@@ -36,84 +35,24 @@ type Recipient struct {
 	Address     string
 	Subject     string
 	Body        string
-	Attach      string
-	AttachPath  string
-	Command     string
-	CommandArgs []string
+	Attachments []string
 	Status      string
 }
 
-func splitCommandLine(input string) ([]string, error) {
-	var parts []string
-	var current strings.Builder
-	tokenStarted := false
-	inSingle := false
-	inDouble := false
-	escaped := false
-
-	flush := func() {
-		if !tokenStarted {
-			return
-		}
-		parts = append(parts, current.String())
-		current.Reset()
-		tokenStarted = false
-	}
-
-	for _, r := range input {
-		switch {
-		case escaped:
-			current.WriteRune(r)
-			tokenStarted = true
-			escaped = false
-		case inSingle:
-			if r == '\'' {
-				inSingle = false
-				continue
-			}
-			current.WriteRune(r)
-		case inDouble:
-			switch r {
-			case '"':
-				inDouble = false
-			case '\\':
-				escaped = true
-			default:
-				current.WriteRune(r)
-			}
-		default:
-			if unicode.IsSpace(r) {
-				flush()
-				continue
-			}
-			tokenStarted = true
-			switch r {
-			case '\'':
-				inSingle = true
-			case '"':
-				inDouble = true
-			case '\\':
-				escaped = true
-			default:
-				current.WriteRune(r)
-			}
+func splitAttachments(raw string) []string {
+	var result []string
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			result = append(result, s)
 		}
 	}
-
-	if escaped {
-		return nil, fmt.Errorf("unterminated escape in command line")
-	}
-	if inSingle || inDouble {
-		return nil, fmt.Errorf("unterminated quote in command line")
-	}
-	flush()
-	return parts, nil
+	return result
 }
 
-func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl, cmdTmpl string) ([]Recipient, []string) {
+func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl string) ([]Recipient, []string) {
 	var recipients []Recipient
 	var errs []string
-	cmdParts, cmdParseErr := splitCommandLine(cmdTmpl)
 
 	for i, row := range rows {
 		status := "Pending"
@@ -158,35 +97,12 @@ func buildRecipients(headers []string, rows [][]string, statusCol int, addrTmpl,
 			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in attachment template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
 		}
 
-		vars["_address"] = addr
-		vars["_subject"] = subject
-		vars["_body"] = body
-		vars["_attachment"] = attach
-
-		cmd, missing := resolveTemplate(cmdTmpl, vars)
-		if len(missing) > 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in command template: %s\n    → Ensure these columns exist in the CSV: %s", i+1, strings.Join(missing, ", "), strings.Join(missing, ", ")))
-		}
-
-		var resolvedCmdParts []string
-		if cmdParseErr != nil {
-			errs = append(errs, fmt.Sprintf("  Row %d: Invalid command template\n    → Fix executable_commandline_template.txt quoting/escaping: %v", i+1, cmdParseErr))
-		} else {
-			resolvedCmdParts = make([]string, 0, len(cmdParts))
-			for _, part := range cmdParts {
-				resolvedPart, _ := resolveTemplate(part, vars)
-				resolvedCmdParts = append(resolvedCmdParts, resolvedPart)
-			}
-		}
-
 		recipients = append(recipients, Recipient{
 			Row:         i,
 			Address:     addr,
 			Subject:     subject,
 			Body:        body,
-			Attach:      attach,
-			Command:     cmd,
-			CommandArgs: resolvedCmdParts,
+			Attachments: splitAttachments(attach),
 			Status:      status,
 		})
 	}

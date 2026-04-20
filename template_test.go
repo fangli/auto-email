@@ -72,31 +72,21 @@ func TestHasUnresolved(t *testing.T) {
 	}
 }
 
-func TestSplitCommandLine(t *testing.T) {
+func TestSplitAttachments(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    []string
-		wantErr bool
+		name string
+		raw  string
+		want []string
 	}{
-		{name: "basic", input: "echo test", want: []string{"echo", "test"}},
-		{name: "quoted_spaces", input: `send --subject "{{_subject}}" --to "{{_address}}"`, want: []string{"send", "--subject", "{{_subject}}", "--to", "{{_address}}"}},
-		{name: "empty_quoted_arg", input: `cmd "" value`, want: []string{"cmd", "", "value"}},
-		{name: "unterminated_quote", input: `cmd "unterminated`, wantErr: true},
+		{"empty", "", nil},
+		{"single", "file.pdf", []string{"file.pdf"}},
+		{"multiple", "a.pdf, b.txt, c.docx", []string{"a.pdf", "b.txt", "c.docx"}},
+		{"whitespace_only", "  ,  , ", nil},
+		{"trailing_comma", "a.pdf,", []string{"a.pdf"}},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := splitCommandLine(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
+			got := splitAttachments(tt.raw)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
@@ -116,7 +106,7 @@ func TestBuildRecipients(t *testing.T) {
 			{"Alice", "alice@test.com", "Pending"},
 			{"Bob", "bob@test.com", "Pending"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 2, "{{email}}", "Hi {{name}}", "Body for {{name}}", "/tmp/f.txt", "echo {{_address}}")
+		recipients, errs := buildRecipients(headers, rows, 2, "{{email}}", "Hi {{name}}", "Body for {{name}}", "/tmp/f.txt")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
@@ -132,8 +122,8 @@ func TestBuildRecipients(t *testing.T) {
 		if recipients[0].Body != "Body for Alice" {
 			t.Errorf("body = %q, want Body for Alice", recipients[0].Body)
 		}
-		if recipients[0].Command != "echo alice@test.com" {
-			t.Errorf("command = %q, want echo alice@test.com", recipients[0].Command)
+		if len(recipients[0].Attachments) != 1 || recipients[0].Attachments[0] != "/tmp/f.txt" {
+			t.Errorf("attachments = %v, want [/tmp/f.txt]", recipients[0].Attachments)
 		}
 		if recipients[0].Row != 0 || recipients[1].Row != 1 {
 			t.Errorf("row indices wrong: %d, %d", recipients[0].Row, recipients[1].Row)
@@ -147,7 +137,7 @@ func TestBuildRecipients(t *testing.T) {
 			{"b@test.com", "Sent"},
 			{"c@test.com", "Pending"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "/tmp/f", "echo {{_address}}")
+		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "/tmp/f")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
@@ -160,23 +150,6 @@ func TestBuildRecipients(t *testing.T) {
 		if recipients[1].Address != "" {
 			t.Errorf("sent recipient should have empty address, got %q", recipients[1].Address)
 		}
-		if recipients[0].Address != "a@test.com" {
-			t.Errorf("first address = %q, want a@test.com", recipients[0].Address)
-		}
-	})
-
-	t.Run("internal_var_precedence", func(t *testing.T) {
-		headers := []string{"email", "_address", "_status"}
-		rows := [][]string{
-			{"real@test.com", "csv_val", "Pending"},
-		}
-		recipients, errs := buildRecipients(headers, rows, 2, "{{email}}", "subj", "body", "/tmp/f", "echo {{_address}}")
-		if len(errs) > 0 {
-			t.Fatalf("unexpected errors: %v", errs)
-		}
-		if recipients[0].Command != "echo real@test.com" {
-			t.Errorf("command = %q, want 'echo real@test.com' (internal var should override CSV column)", recipients[0].Command)
-		}
 	})
 
 	t.Run("missing_var_errors", func(t *testing.T) {
@@ -184,7 +157,7 @@ func TestBuildRecipients(t *testing.T) {
 		rows := [][]string{
 			{"a@test.com", "Pending"},
 		}
-		_, errs := buildRecipients(headers, rows, 1, "{{nonexistent}}", "subj", "body", "/tmp/f", "echo {{_address}}")
+		_, errs := buildRecipients(headers, rows, 1, "{{nonexistent}}", "subj", "body", "/tmp/f")
 		if len(errs) == 0 {
 			t.Fatal("expected errors for missing variable")
 		}
@@ -196,7 +169,7 @@ func TestBuildRecipients(t *testing.T) {
 			{"a@test.com", "Sent"},
 			{"b@test.com", "Sent"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "/tmp/f", "echo {{_address}}")
+		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "/tmp/f")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
@@ -212,7 +185,7 @@ func TestBuildRecipients(t *testing.T) {
 		rows := [][]string{
 			{"a@test.com", "Skipped"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "", "echo {{_address}}")
+		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
@@ -221,49 +194,37 @@ func TestBuildRecipients(t *testing.T) {
 		}
 	})
 
-	t.Run("quoted_command_template_preserves_spaces", func(t *testing.T) {
-		headers := []string{"email", "name", "_status"}
+	t.Run("multiple_attachments", func(t *testing.T) {
+		headers := []string{"email", "files", "_status"}
 		rows := [][]string{
-			{"alice@test.com", "Alice Smith", "Pending"},
+			{"a@test.com", "a.pdf, b.txt", "Pending"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 2, "{{email}}", "Hello {{name}}", "body", "", `sendmail --subject "{{_subject}}" --to "{{_address}}"`)
+		recipients, errs := buildRecipients(headers, rows, 2, "{{email}}", "subj", "body", "{{files}}")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
-		want := []string{"sendmail", "--subject", "Hello Alice Smith", "--to", "alice@test.com"}
-		if len(recipients[0].CommandArgs) != len(want) {
-			t.Fatalf("got %v, want %v", recipients[0].CommandArgs, want)
+		want := []string{"a.pdf", "b.txt"}
+		if len(recipients[0].Attachments) != len(want) {
+			t.Fatalf("attachments = %v, want %v", recipients[0].Attachments, want)
 		}
 		for i := range want {
-			if recipients[0].CommandArgs[i] != want[i] {
-				t.Errorf("CommandArgs[%d] = %q, want %q", i, recipients[0].CommandArgs[i], want[i])
+			if recipients[0].Attachments[i] != want[i] {
+				t.Errorf("attachments[%d] = %q, want %q", i, recipients[0].Attachments[i], want[i])
 			}
 		}
 	})
 
-	t.Run("csv_value_cannot_inject_extra_argv_tokens", func(t *testing.T) {
-		headers := []string{"email", "subject", "_status"}
+	t.Run("empty_attachment", func(t *testing.T) {
+		headers := []string{"email", "_status"}
 		rows := [][]string{
-			{`alice@test.com`, `hello" --bcc attacker@example.com "world`, "Pending"},
+			{"a@test.com", "Pending"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 2, "{{email}}", "{{subject}}", "body", "", `sendmail --subject "{{_subject}}" --to "{{_address}}"`)
+		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
-		want := []string{
-			"sendmail",
-			"--subject",
-			`hello" --bcc attacker@example.com "world`,
-			"--to",
-			"alice@test.com",
-		}
-		if len(recipients[0].CommandArgs) != len(want) {
-			t.Fatalf("got %v, want %v", recipients[0].CommandArgs, want)
-		}
-		for i := range want {
-			if recipients[0].CommandArgs[i] != want[i] {
-				t.Errorf("CommandArgs[%d] = %q, want %q", i, recipients[0].CommandArgs[i], want[i])
-			}
+		if len(recipients[0].Attachments) != 0 {
+			t.Errorf("attachments = %v, want empty", recipients[0].Attachments)
 		}
 	})
 
@@ -272,7 +233,7 @@ func TestBuildRecipients(t *testing.T) {
 		rows := [][]string{
 			{"a@test.com"},
 		}
-		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "", "echo {{_address}}")
+		recipients, errs := buildRecipients(headers, rows, 1, "{{email}}", "subj", "body", "")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}
@@ -283,7 +244,7 @@ func TestBuildRecipients(t *testing.T) {
 
 	t.Run("no_rows", func(t *testing.T) {
 		headers := []string{"email", "_status"}
-		recipients, errs := buildRecipients(headers, nil, 1, "{{email}}", "subj", "body", "/tmp/f", "echo {{_address}}")
+		recipients, errs := buildRecipients(headers, nil, 1, "{{email}}", "subj", "body", "/tmp/f")
 		if len(errs) > 0 {
 			t.Fatalf("unexpected errors: %v", errs)
 		}

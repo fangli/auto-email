@@ -4,24 +4,23 @@
 
 ### Overview
 
-An interactive CLI tool that sends emails (Gmail) by executing an external email-sending command (e.g., `gws gmail +send`). The tool reads a CSV recipient list and template files, resolves templates per row, validates everything upfront, then walks the user through sending each email one-by-one with a styled TUI.
+A web-based batch email sending tool powered by the Google Workspace CLI (`gws gmail +send`). The tool reads a CSV task list and template files, resolves templates per row, validates everything upfront, then serves a web UI for reviewing and sending each email one-by-one.
 
 ### Bootstrap
 
-When the executable starts, it reads these files from the current working directory:
+When the executable starts, it:
 
-- `email_recipients.csv` — CSV with header row containing recipient data.
-- `email_address_template.txt` — Template for the recipient email address.
-- `email_attachment_template.txt` — Template for the attachment file path. Only a single attachment is supported.
-- `email_body_template.txt` — Template for the email body.
-- `email_subject_template.txt` — Template for the email subject.
-- `executable_commandline_template.txt` — Template for the email-sending command. Contains four internal template variables prefixed with underscore: `{{_address}}`, `{{_attachment}}`, `{{_body}}`, `{{_subject}}`. These are resolved from the other template files. All other `{{var}}` references are resolved from CSV columns. Example content: `gws gmail +send --to {{_address}} --subject {{_subject}} --body {{_body}} --attach {{_attachment}} --from {{my_own_email_addr}}`.
-
-If a CSV column has the same name as an internal template variable (e.g., `_address`), the internal variable always takes precedence.
+1. Checks that `gws` is installed and authenticated (via `gws gmail users getProfile`). If not, prints setup instructions and exits.
+2. Reads these files from the current working directory:
+   - `tasks.csv` (default, overridable with `--csv`) — CSV with header row containing recipient data.
+   - `email_recipient_template.txt` — Template for the recipient email address.
+   - `email_subject_template.txt` — Template for the email subject.
+   - `email_body_template.txt` — Template for the email body.
+   - `email_attachment_template.txt` (optional) — Template for attachment file path(s). Supports comma-separated multiple paths.
 
 ### CSV Value Normalization
 
-All values read from the CSV are trimmed of leading and trailing whitespace.
+All values read from the CSV are trimmed of leading and trailing whitespace. Short rows are padded to match header count.
 
 ### Template Parsing
 
@@ -29,34 +28,42 @@ Templates use `{{column_name}}` syntax (double curly brackets). The parser trims
 
 ### Validation
 
-At bootstrap, before any sending, the app validates all pending entries:
+At bootstrap, before the web server starts, the app validates all pending entries:
 
-- Email addresses must be valid and non-empty (parsed via `net/mail`).
-- Attachment paths must point to existing files.
-- The command executable (first whitespace-separated token) must exist on PATH.
-- All template variables must be resolved (no remaining `{{...}}`).
+- Email addresses must be valid and non-empty (parsed via `net/mail`). Comma-separated addresses are supported.
+- Attachment paths (each one in the comma-separated list) must point to existing files.
 
 On any validation error, the app prints all errors at once with row number, field, value, and a fix suggestion, then exits.
 
-### User Experience
+### Email Sending
 
-Once bootstrap completes, the app processes entries from top to bottom:
+Emails are sent using a hardcoded `gws gmail +send` command:
 
-1. For each entry, clear the screen and display parsed email info (recipient, subject, body, attachment path and size) in a styled TUI box.
-2. Prompt: press Enter to send, ESC to cancel.
-3. On ESC: exit with a summary of total sent (all time), sent this run, and remaining.
-4. On Enter: execute the resolved command.
-   - Show "Sending..." status in-place (no scrolling).
-   - On success: display "Sent Successfully" for 1 second, then auto-advance to the next entry.
-   - On error: display the error from the subprocess, stay on the current entry, and prompt Enter to retry or ESC to abort.
+```
+gws gmail +send --to <address> --subject <subject> --body <body> [--html] [-a file1] [-a file2] ...
+```
 
-This continues until all pending entries are sent.
+- HTML body is auto-detected (regex: `<[a-zA-Z][\s\S]*>`) and sent with `--html` flag.
+- Each attachment gets a separate `-a` flag.
+- Command timeout: 2 minutes. Output capture limit: 64 KB.
+
+### Web UI
+
+Once bootstrap completes, the app starts an HTTP server at `127.0.0.1:8123` and opens the browser. The UI provides:
+
+1. Progress bar and counters (current/pending/sent/total).
+2. Recipient details: To, Subject, Body (rendered in iframe).
+3. Attachment preview with `< N of M >` navigation for multiple attachments. Supports PDF (inline), images, TXT, and DOCX (text extraction).
+4. Send / Skip buttons. Retry on error.
+5. Help modal with template file documentation.
+6. Logged-in Google account display.
+7. Real-time updates via Server-Sent Events (SSE).
 
 ### Status Tracking
 
 - The CSV may or may not have a `_status` column. If missing, the app adds it as the last column with default value `Pending` and saves immediately.
-- On successful send, the entry is updated to `Sent` and the CSV is saved.
-- On failed send, the entry stays `Pending`.
+- On successful send, the entry is updated to `Sent` and the CSV is saved via atomic temp-file rename.
+- On skip, the entry is updated to `Skipped`.
 - Only entries with `_status == "Pending"` are processed.
 
 ---
@@ -69,43 +76,42 @@ This continues until all pending entries are sent.
 auto-email/
   go.mod
   go.sum
-  main.go             — Entry point, bootstrap, validation
-  template.go         — Template parsing and resolution
-  tui.go              — Bubbletea model, state machine, lipgloss rendering
+  main.go             — Entry point, bootstrap, gws auth check, validation
+  template.go         — Template parsing, resolution, recipient building
+  server.go           — HTTP server, SSE, send execution, attachment serving
+  ui/index.html       — Embedded web UI (single-page, dark theme)
   template_test.go    — Tests for template resolution and recipient building
   main_test.go        — Tests for file I/O, CSV, validation, bootstrap integration
-  tui_test.go         — TUI state transition, view rendering, full flow simulation
+  server_test.go      — Tests for HTTP endpoints, send flow, SSE
   CLAUDE.md           — Claude Code guidance
   PROJECT.md          — This file
-  testdata/           — Sample fixtures for manual testing
+  README.md           — User-facing documentation
 ```
 
 ### Dependencies
 
-- `charm.land/bubbletea/v2` — TUI event loop, keypress handling, alt-screen
-- `charm.land/bubbles/v2` — Viewport component for scrollable attachment preview
-- `charm.land/lipgloss/v2` — Bordered boxes, colored text
-- Stdlib: `encoding/csv`, `os/exec`, `regexp`, `net/mail`, `archive/zip`, `encoding/xml`, `os`, `fmt`, `strings`, `time`, `io`, `path/filepath`
+Stdlib only: `net/http`, `encoding/csv`, `encoding/json`, `os/exec`, `regexp`, `net/mail`, `archive/zip`, `encoding/xml`, `os`, `fmt`, `strings`, `time`, `io`, `path/filepath`, `context`, `sync`, `net`
 
 ### Key Types
 
 ```go
 type Recipient struct {
-    Row     int       // 0-based index into CSV data rows
-    Address string
-    Subject string
-    Body    string
-    Attach  string
-    Command string
-    Status  string    // "Pending" or "Sent"
+    Row         int
+    Address     string
+    Subject     string
+    Body        string
+    Attachments []string  // comma-split from template, each trimmed
+    Status      string    // "Pending", "Sent", or "Skipped"
 }
 
 type AppData struct {
     Headers    []string
-    Rows       [][]string   // mutable for status updates
+    Rows       [][]string
     StatusCol  int
     Recipients []Recipient
     CSVPath    string
+    BaseDir    string
+    LoggedInAs string
 }
 ```
 
@@ -116,53 +122,30 @@ Regex: `\{\{\s*(\w+)\s*\}\}` — matches `{{var}}` with optional inner whitespac
 Resolution order per CSV row:
 
 1. Build `vars` map from CSV columns.
-2. Resolve address, subject, body, and attachment templates using `vars`.
-3. Add internal vars (`_address`, `_subject`, `_body`, `_attachment`) to `vars`, overriding any CSV columns with the same names.
-4. Resolve command template using the augmented `vars`.
+2. Resolve recipient, subject, body, and attachment templates using `vars`.
+3. Split resolved attachment string by comma, trim each, filter empty → `Attachments []string`.
 
-### TUI State Machine
+### Server Architecture
 
-```
-statePreview  ──Enter──▶  stateSending  ──success──▶  stateSent  ──1s tick──▶  statePreview (next)
-                                         ──error────▶  stateError ──Enter────▶  stateSending (retry)
-              ──ESC────▶  quit                                     ──ESC────▶  quit
-```
-
-- Command execution: plain `tea.Cmd` closure running `exec.Command` with `CombinedOutput()`. Bubbletea runs it in a goroutine; the TUI renders "Sending..." while it executes.
-- Auto-advance: `tea.Tick(1s)` fires `autoAdvanceMsg` after successful send.
-- Alt screen: set via `v.AltScreen = true` on the `tea.View` struct (bubbletea v2 API).
-- Out-of-bounds guard: `View()` returns empty content when `cursor >= len(pending)` to prevent panic on final render after quit.
-
-### TUI Layout
-
-The TUI uses a three-section layout pinned to the terminal height:
-
-- **Top (fixed)**: Email info box — To, Subject, Body with separator rows
-- **Middle (flexible)**: Attachment box — shows file path and size; for `.pdf`, `.txt`, and `.docx` files, includes a scrollable text preview via the bubbles viewport component
-- **Bottom (pinned)**: Status line (fixed 1-line height), progress text, progress bar, prompt box
-
-The `renderLayout()` method handles all states, with `renderPreview()` and `renderError()` as thin wrappers that pass the appropriate prompt text and status message.
+- `serverState` holds mutable state under a mutex: cursor position, send state, SSE clients.
+- `sendCmdFunc` field allows test injection of mock send commands (defaults to `defaultSendCmd` which runs `gws`).
+- `buildStatus()` constructs JSON response with `attachments []attachmentJSON` (path/ext/size per file) and `loggedInAs`.
+- Attachment and preview endpoints accept `?index=N` query param for multi-attachment support.
+- SSE handler selects on `s.done` channel to exit cleanly when all tasks complete, preventing shutdown timeout.
 
 ### Attachment Preview
 
 Supported formats:
-- `.pdf` — shells out to `pdftotext` (poppler-utils); falls back gracefully if not installed
-- `.txt` — reads file directly via `os.ReadFile`
-- `.docx` — DIY parser using stdlib `archive/zip` + `encoding/xml`, extracts `<w:t>` text from `word/document.xml`
+- `.pdf` — shells out to `pdftotext` (poppler-utils); falls back gracefully if not installed. Inline iframe preview in web UI.
+- `.txt` — reads file directly, up to 1 MB.
+- `.docx` — DIY parser using stdlib `archive/zip` + `encoding/xml`, extracts `<w:t>` text from `word/document.xml`.
+- Images (png/jpg/gif/webp/svg/bmp) — displayed inline via `<img>` tag.
 
-All formats return `""` on any error, which hides the preview and shows only the attachment info line.
+All formats return `""` on any error, which hides the preview.
 
 ### CSV Persistence
 
-`saveCSV()` rewrites the entire CSV after each successful send. The row is updated in memory first (`Rows[row][statusCol] = "Sent"`), then written to disk. If the write fails, the TUI shows an error but doesn't crash — the row stays `Pending`, which is safe for re-run.
-
-### Design Decisions
-
-- **Single `main` package**: no sub-packages needed for ~500 lines of code.
-- **CSV as persistence**: no database; the CSV is small and rewriting it is atomic enough for this use case.
-- **`strings.Fields()` for command splitting**: handles the common case. Does not support quoted arguments with spaces.
-- **Validation collects all errors**: prints them all at once so the user can fix everything in one pass.
-- **`seenExec` map in validation**: deduplicates command PATH lookups across rows.
+`saveCSV()` writes to a temp file then renames atomically. The row is updated in memory first, then written to disk. If the write fails, the server shows an error but the row stays `Pending`, which is safe for re-run.
 
 ---
 
@@ -170,39 +153,17 @@ All formats return `""` on any error, which hides the preview and shows only the
 
 ### Test Structure
 
-- `template_test.go` — 21 subtests covering `resolveTemplate`, `hasUnresolved`, `buildRecipients`
-- `main_test.go` — 25 subtests covering file I/O, CSV parsing, validation, status column addition, bootstrap integration
-- `tui_test.go` — 31 subtests covering key sanity, state transitions, view rendering, full flow simulations, attachment preview extraction (PDF/TXT/DOCX)
+- `template_test.go` — `resolveTemplate`, `hasUnresolved`, `splitAttachments`, `buildRecipients` (basic, skips_sent, missing_var, multiple_attachments, empty_attachment, etc.)
+- `main_test.go` — File I/O, CSV parsing, validation (emails, attachments, multi-attachment), status column addition, bootstrap integration
+- `server_test.go` — HTTP endpoints (status, send, skip, attachment, preview, SSE, index), state transitions, error/retry flows, full flow simulations
 
-### TUI Test Approach
+### Test Approach
 
-Tests drive the bubbletea model directly via `Update()` message injection — no TTY required:
-
-```go
-// Inject a keypress
-result, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-// Simulate send result
-result, cmd = m.Update(sendResultMsg{nil})
-
-// Simulate auto-advance timer
-result, cmd = m.Update(autoAdvanceMsg{})
-
-// Check for quit
-isQuitCmd(cmd)  // executes cmd, checks for tea.QuitMsg
-```
-
-### Full Flow Simulations
-
-- **TestFullFlowTwoRecipientsSendAll** — preview → send → sent → advance → preview → send → sent → advance → quit, verifies CSV on disk
-- **TestFullFlowErrorThenRetry** — send → error → retry → success → quit
-- **TestFullFlowEscFromPreview** — immediate ESC, verifies no CSV changes
-- **TestFullFlowEscFromError** — send → error → ESC, verifies row stays Pending
+Server tests use `httptest` with a mock `sendCmdFunc` to avoid requiring `gws` in the test environment. State transitions are verified by polling `/api/status`.
 
 ### Running Tests
 
 ```bash
 go test ./... -count=1    # all tests, no cache
-go test -run TestFull     # full flow tests only
 go test ./... -v          # verbose output
 ```

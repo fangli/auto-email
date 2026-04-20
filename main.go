@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -18,6 +19,7 @@ type AppData struct {
 	Recipients []Recipient
 	CSVPath    string
 	BaseDir    string
+	LoggedInAs string
 }
 
 func readFile(path string) (string, error) {
@@ -160,7 +162,6 @@ func resolveAttachmentPath(baseDir, path string) (string, error) {
 
 func validate(baseDir string, recipients []Recipient) []string {
 	var errs []string
-	seenExec := make(map[string]bool)
 
 	for i := range recipients {
 		r := &recipients[i]
@@ -182,61 +183,64 @@ func validate(baseDir string, recipients []Recipient) []string {
 			}
 		}
 
-		if strings.TrimSpace(r.Attach) != "" {
-			resolvedAttach, err := resolveAttachmentPath(baseDir, r.Attach)
+		for _, attach := range r.Attachments {
+			info, err := os.Stat(attach)
+			if !filepath.IsAbs(attach) {
+				full := filepath.Join(baseDir, attach)
+				info, err = os.Stat(full)
+			}
 			if err != nil {
-				errs = append(errs, fmt.Sprintf("  Row %d: Attachment path is outside the CSV workspace: %q\n    → Keep attachments under %s", r.Row+1, r.Attach, baseDir))
-			} else {
-				info, err := os.Stat(resolvedAttach)
-				if err != nil {
-					errs = append(errs, fmt.Sprintf("  Row %d: Attachment file not found: %q\n    → Check that the file exists at the specified path", r.Row+1, r.Attach))
-				} else if info.IsDir() {
-					errs = append(errs, fmt.Sprintf("  Row %d: Attachment path is a directory: %q\n    → Provide a path to a file, not a directory", r.Row+1, r.Attach))
-				} else {
-					r.AttachPath = resolvedAttach
-				}
+				errs = append(errs, fmt.Sprintf("  Row %d: Attachment file not found: %q\n    → Check that the file exists at the specified path", r.Row+1, attach))
+			} else if info.IsDir() {
+				errs = append(errs, fmt.Sprintf("  Row %d: Attachment path is a directory: %q\n    → Provide a path to a file, not a directory", r.Row+1, attach))
 			}
-		}
-
-		parts := r.CommandArgs
-		if len(parts) == 0 && strings.TrimSpace(r.Command) != "" {
-			parsed, err := splitCommandLine(r.Command)
-			if err != nil {
-				errs = append(errs, fmt.Sprintf("  Row %d: Invalid command line %q\n    → Fix executable_commandline_template.txt quoting/escaping", r.Row+1, r.Command))
-			} else {
-				parts = parsed
-				r.CommandArgs = parsed
-			}
-		}
-		if len(parts) == 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Command is empty\n    → Check executable_commandline_template.txt", r.Row+1))
-		} else {
-			exe := parts[0]
-			if !seenExec[exe] {
-				if _, err := exec.LookPath(exe); err != nil {
-					errs = append(errs, fmt.Sprintf("  Row %d: Command %q not found on PATH\n    → Verify the command name in executable_commandline_template.txt", r.Row+1, exe))
-				}
-				seenExec[exe] = true
-			}
-		}
-
-		if unresolved := hasUnresolved(r.Command); len(unresolved) > 0 {
-			errs = append(errs, fmt.Sprintf("  Row %d: Unresolved variables in final command: %s\n    → Ensure these columns exist in the CSV", r.Row+1, strings.Join(unresolved, ", ")))
 		}
 	}
 
 	return errs
 }
 
+func checkGws() (string, error) {
+	if _, err := exec.LookPath("gws"); err != nil {
+		return "", fmt.Errorf("'gws' (Google Workspace CLI) is not installed or not in PATH.\n\n  Install it from: https://github.com/googleworkspace/cli/releases\n  Then run: gws auth setup")
+	}
+
+	out, err := exec.Command("gws", "gmail", "users", "getProfile", "--params", `{"userId":"me"}`).Output()
+	if err != nil {
+		return "", fmt.Errorf("'gws' is not authenticated. Run the following to sign in:\n\n  gws auth setup\n\n  Or if you've already set up a project:\n\n  gws auth login")
+	}
+
+	var profile struct {
+		EmailAddress string `json:"emailAddress"`
+	}
+	if err := json.Unmarshal(out, &profile); err != nil || profile.EmailAddress == "" {
+		return "", fmt.Errorf("could not determine logged-in email. Run:\n\n  gws auth setup")
+	}
+	return profile.EmailAddress, nil
+}
+
 func main() {
-	csvPath, err := filepath.Abs("email_recipients.csv")
+	csvFile := "tasks.csv"
+	for i, arg := range os.Args[1:] {
+		if arg == "--csv" && i+1 < len(os.Args[1:])-0 {
+			csvFile = os.Args[i+2]
+		}
+	}
+	csvPath, err := filepath.Abs(csvFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot resolve CSV path: %v\n", err)
 		os.Exit(1)
 	}
 	baseDir := filepath.Dir(csvPath)
 
-	addrTmpl, err := readTemplate("email_address_template.txt")
+	loggedInAs, err := checkGws()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Authenticated as: %s\n", loggedInAs)
+
+	addrTmpl, err := readTemplate("email_recipient_template.txt")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -253,13 +257,7 @@ func main() {
 	}
 	attachTmpl, err := readTemplate("email_attachment_template.txt")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	cmdTmpl, err := readTemplate("executable_commandline_template.txt")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		attachTmpl = ""
 	}
 
 	headers, rows, err := loadCSV(csvPath)
@@ -286,7 +284,7 @@ func main() {
 		}
 	}
 
-	recipients, buildErrs := buildRecipients(headers, rows, statusCol, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl, cmdTmpl)
+	recipients, buildErrs := buildRecipients(headers, rows, statusCol, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl)
 	if len(buildErrs) > 0 {
 		fmt.Fprintf(os.Stderr, "Template resolution errors:\n\n%s\n", strings.Join(buildErrs, "\n\n"))
 		os.Exit(1)
@@ -320,6 +318,7 @@ func main() {
 		Recipients: recipients,
 		CSVPath:    csvPath,
 		BaseDir:    baseDir,
+		LoggedInAs: loggedInAs,
 	}
 
 	summary := runServer(app, pending, sentEver)

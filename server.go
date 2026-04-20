@@ -1,12 +1,10 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +14,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,20 +32,21 @@ type Summary struct {
 }
 
 type serverState struct {
-	mu         sync.Mutex
-	app        *AppData
-	pending    []int
-	cursor     int
-	state      string
-	lastError  string
-	sentRun    int
-	skippedRun int
-	sentEver   int
-	clients    []chan string
-	done       chan struct{}
-	doneOnce   sync.Once
-	ctx        context.Context
-	cancel     context.CancelFunc
+	mu          sync.Mutex
+	app         *AppData
+	pending     []int
+	cursor      int
+	state       string
+	lastError   string
+	sentRun     int
+	skippedRun  int
+	sentEver    int
+	clients     []chan string
+	done        chan struct{}
+	doneOnce    sync.Once
+	ctx         context.Context
+	cancel      context.CancelFunc
+	sendCmdFunc func(ctx context.Context, rec Recipient, baseDir string) (string, error)
 }
 
 const (
@@ -138,19 +139,24 @@ func runCommandCombinedLimited(cmd *exec.Cmd, limit int) (string, error) {
 }
 
 type statusResponse struct {
-	State     string         `json:"state"`
-	Recipient *recipientJSON `json:"recipient,omitempty"`
-	Progress  progressJSON   `json:"progress"`
-	Error     string         `json:"error"`
+	State      string         `json:"state"`
+	Recipient  *recipientJSON `json:"recipient,omitempty"`
+	Progress   progressJSON   `json:"progress"`
+	Error      string         `json:"error"`
+	LoggedInAs string         `json:"loggedInAs"`
+}
+
+type attachmentJSON struct {
+	Path string `json:"path"`
+	Ext  string `json:"ext"`
+	Size string `json:"size"`
 }
 
 type recipientJSON struct {
-	Address    string `json:"address"`
-	Subject    string `json:"subject"`
-	Body       string `json:"body"`
-	Attach     string `json:"attach"`
-	AttachSize string `json:"attachSize"`
-	AttachExt  string `json:"attachExt"`
+	Address     string           `json:"address"`
+	Subject     string           `json:"subject"`
+	Body        string           `json:"body"`
+	Attachments []attachmentJSON `json:"attachments"`
 }
 
 type progressJSON struct {
@@ -173,6 +179,7 @@ type statusSnapshot struct {
 	total      int
 	recipient  *Recipient
 	baseDir    string
+	loggedInAs string
 }
 
 func extractPreviewText(path string) string {
@@ -193,75 +200,8 @@ func extractPreviewText(path string) string {
 		}
 		defer f.Close()
 		return readTextPreview(f)
-	case ".docx":
-		return extractDocxText(path)
 	}
 	return ""
-}
-
-func extractDocxText(path string) string {
-	r, err := zip.OpenReader(path)
-	if err != nil {
-		return ""
-	}
-	defer r.Close()
-	for _, f := range r.File {
-		if f.Name != "word/document.xml" {
-			continue
-		}
-		if f.UncompressedSize64 > maxPreviewBytes+1 {
-			return appendPreviewTruncated("")
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return ""
-		}
-		data, truncated, err := readLimitedBytes(rc, maxPreviewBytes)
-		if err != nil {
-			rc.Close()
-			return ""
-		}
-		text := parseDocxXML(bytes.NewReader(data))
-		if truncated {
-			text = appendPreviewTruncated(text)
-		}
-		if err := rc.Close(); err != nil {
-			return ""
-		}
-		return text
-	}
-	return ""
-}
-
-func parseDocxXML(r io.Reader) string {
-	dec := xml.NewDecoder(r)
-	var paragraphs []string
-	var current strings.Builder
-	inT := false
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			break
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			if t.Name.Local == "t" {
-				inT = true
-			}
-		case xml.EndElement:
-			if t.Name.Local == "t" {
-				inT = false
-			} else if t.Name.Local == "p" {
-				paragraphs = append(paragraphs, current.String())
-				current.Reset()
-			}
-		case xml.CharData:
-			if inT {
-				current.Write(t)
-			}
-		}
-	}
-	return strings.TrimSpace(strings.Join(paragraphs, "\n"))
 }
 
 func fileSize(path string) string {
@@ -308,19 +248,74 @@ func (s *serverState) currentRecipientLocked() (int, Recipient, bool) {
 	return recIdx, s.app.Recipients[recIdx], true
 }
 
-func (s *serverState) currentAttachmentPathLocked() (string, bool) {
-	_, rec, ok := s.currentRecipientLocked()
-	if !ok || strings.TrimSpace(rec.Attach) == "" {
+func (s *serverState) resolveAttachPath(rec Recipient, index int) (string, bool) {
+	if index < 0 || index >= len(rec.Attachments) {
 		return "", false
 	}
-	if s.app.BaseDir == "" {
-		return "", false
-	}
-	path, err := resolveAttachmentPath(s.app.BaseDir, rec.Attach)
-	if err != nil {
-		return "", false
+	path := rec.Attachments[index]
+	if !filepath.IsAbs(path) && s.app.BaseDir != "" {
+		path = filepath.Join(s.app.BaseDir, path)
 	}
 	return path, true
+}
+
+func (s *serverState) handleAttachment(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.state == "done" {
+		s.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
+	_, rec, ok := s.currentRecipientLocked()
+	s.mu.Unlock()
+	if !ok || len(rec.Attachments) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	index, _ := strconv.Atoi(r.URL.Query().Get("index"))
+	path, ok := s.resolveAttachPath(rec, index)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func (s *serverState) handlePreview(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.state == "done" {
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	_, rec, ok := s.currentRecipientLocked()
+	s.mu.Unlock()
+	if !ok || len(rec.Attachments) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	index, _ := strconv.Atoi(r.URL.Query().Get("index"))
+	path, ok := s.resolveAttachPath(rec, index)
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".txt" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	text := extractPreviewText(path)
+	if text == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if _, err := w.Write([]byte(text)); err != nil {
+		return
+	}
 }
 
 func (s *serverState) removeClientLocked(target chan string) {
@@ -351,6 +346,7 @@ func (s *serverState) snapshotLocked() statusSnapshot {
 		sentEver:   s.sentEver,
 		total:      len(s.app.Recipients),
 		baseDir:    s.app.BaseDir,
+		loggedInAs: s.app.LoggedInAs,
 	}
 	if s.state != "done" {
 		_, r, ok := s.currentRecipientLocked()
@@ -373,22 +369,29 @@ func buildStatus(snapshot statusSnapshot) statusResponse {
 			SentEver:   snapshot.sentEver,
 			Total:      snapshot.total,
 		},
-		Error: snapshot.lastError,
+		Error:      snapshot.lastError,
+		LoggedInAs: snapshot.loggedInAs,
 	}
 	if snapshot.recipient != nil {
 		r := snapshot.recipient
-		attachSize := "unknown"
-		if resolvedPath, err := resolveAttachmentPath(snapshot.baseDir, r.Attach); err == nil && resolvedPath != "" {
-			attachSize = fileSize(resolvedPath)
+		var attachments []attachmentJSON
+		for _, a := range r.Attachments {
+			path := a
+			if !filepath.IsAbs(path) && snapshot.baseDir != "" {
+				path = filepath.Join(snapshot.baseDir, path)
+			}
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(a)), ".")
+			attachments = append(attachments, attachmentJSON{
+				Path: a,
+				Ext:  ext,
+				Size: fileSize(path),
+			})
 		}
-		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(r.Attach)), ".")
 		resp.Recipient = &recipientJSON{
-			Address:    r.Address,
-			Subject:    r.Subject,
-			Body:       r.Body,
-			Attach:     r.Attach,
-			AttachSize: attachSize,
-			AttachExt:  ext,
+			Address:     r.Address,
+			Subject:     r.Subject,
+			Body:        r.Body,
+			Attachments: attachments,
 		}
 	}
 	return resp
@@ -483,6 +486,28 @@ func (s *serverState) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var htmlRe = regexp.MustCompile(`<[a-zA-Z][\s\S]*>`)
+
+func looksLikeHtml(s string) bool {
+	return htmlRe.MatchString(s)
+}
+
+func defaultSendCmd(ctx context.Context, rec Recipient, baseDir string) (string, error) {
+	args := []string{"gmail", "+send", "--to", rec.Address, "--subject", rec.Subject, "--body", rec.Body}
+	if looksLikeHtml(rec.Body) {
+		args = append(args, "--html")
+	}
+	for _, a := range rec.Attachments {
+		path := a
+		if !filepath.IsAbs(path) && baseDir != "" {
+			path = filepath.Join(baseDir, path)
+		}
+		args = append(args, "-a", path)
+	}
+	cmd := exec.CommandContext(ctx, "gws", args...)
+	return runCommandCombinedLimited(cmd, maxCommandOutputBytes)
+}
+
 func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 	if rejectUnexpectedRequestBody(w, r) {
 		return
@@ -506,18 +531,10 @@ func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "current recipient already sent; skip to continue", http.StatusConflict)
 		return
 	}
-	if len(rec.CommandArgs) == 0 {
-		parts, err := splitCommandLine(rec.Command)
-		if err != nil || len(parts) == 0 {
-			s.state = "error"
-			s.lastError = "invalid command configuration"
-			s.broadcastStateLocked()
-			s.mu.Unlock()
-			http.Error(w, "invalid command configuration", http.StatusConflict)
-			return
-		}
-		rec.CommandArgs = parts
-		s.app.Recipients[recIdx].CommandArgs = parts
+	baseDir := s.app.BaseDir
+	sendFn := s.sendCmdFunc
+	if sendFn == nil {
+		sendFn = defaultSendCmd
 	}
 	s.state = "sending"
 	s.lastError = ""
@@ -529,8 +546,7 @@ func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 	go func(rec Recipient, recIdx int) {
 		ctx, cancel := context.WithTimeout(s.ctx, sendCommandTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, rec.CommandArgs[0], rec.CommandArgs[1:]...)
-		output, err := runCommandCombinedLimited(cmd, maxCommandOutputBytes)
+		output, err := sendFn(ctx, rec, baseDir)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			err = fmt.Errorf("command timed out after %s", sendCommandTimeout)
 		}
@@ -619,57 +635,6 @@ func (s *serverState) handleSkip(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *serverState) handleAttachment(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.state == "done" {
-		s.mu.Unlock()
-		http.NotFound(w, r)
-		return
-	}
-	_, rec, ok := s.currentRecipientLocked()
-	s.mu.Unlock()
-	if !ok || strings.TrimSpace(rec.Attach) == "" {
-		http.NotFound(w, r)
-		return
-	}
-	path := rec.Attach
-	if !filepath.IsAbs(path) && s.app.BaseDir != "" {
-		path = filepath.Join(s.app.BaseDir, path)
-	}
-	http.ServeFile(w, r, path)
-}
-
-func (s *serverState) handlePreview(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.state == "done" {
-		s.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	path, ok := s.currentAttachmentPathLocked()
-	s.mu.Unlock()
-	if !ok {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == ".pdf" || (ext != ".txt" && ext != ".docx") {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-
-	text := extractPreviewText(path)
-	if text == "" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if _, err := w.Write([]byte(text)); err != nil {
-		return
-	}
-}
-
 func (s *serverState) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -707,6 +672,8 @@ func (s *serverState) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-s.done:
 			return
 		case msg := <-ch:
 			if !writeSSEMessage(w, flusher, msg) {

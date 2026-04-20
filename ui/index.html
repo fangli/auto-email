@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>auto-email</title>
+<title>Batched Email Sending Portal</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; overflow: hidden; }
@@ -36,6 +36,13 @@
   #attach-preview-area { flex: 1; min-height: 0; overflow: hidden; }
   #attach-preview-area iframe { width: 100%; height: 100%; border: 1px solid #333; border-radius: 4px; background: #fff; }
   #attach-preview-area pre { height: 100%; overflow: auto; padding: 12px; background: #111; border: 1px solid #333; border-radius: 4px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+  .docx-preview { height: 100%; overflow: auto; padding: 16px; background: #fff; color: #333; border: 1px solid #333; border-radius: 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; line-height: 1.6; }
+  .docx-preview h1, .docx-preview h2, .docx-preview h3 { margin: 16px 0 8px; color: #111; }
+  .docx-preview p { margin: 0 0 8px; }
+  .docx-preview ul, .docx-preview ol { margin: 0 0 8px 24px; }
+  .docx-preview table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+  .docx-preview td, .docx-preview th { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+  .docx-preview th { background: #f5f5f5; font-weight: 600; }
 
   #actions { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
   button { padding: 10px 24px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
@@ -56,6 +63,31 @@
   .status-error { color: #ef4444; }
 
   .hidden { display: none !important; }
+
+  #btn-help { background: transparent; color: #888; padding: 10px 12px; }
+  #btn-help:hover { color: #ccc; }
+  .action-delim { color: #444; font-size: 18px; user-select: none; }
+
+  #attach-nav { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; font-size: 13px; color: #aaa; }
+  #attach-nav button { padding: 2px 8px; font-size: 13px; background: #333; color: #ccc; border-radius: 4px; }
+  #attach-nav button:disabled { opacity: 0.3; }
+  #logged-in-as { font-size: 13px; color: #4ade80; margin-right: auto; }
+
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; }
+  .modal-box { position: fixed; inset: 40px; z-index: 101; background: #1a1a1a; border: 1px solid #444; border-radius: 12px; display: flex; flex-direction: column; max-width: 800px; margin: auto; }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #333; flex-shrink: 0; }
+  .modal-header h2 { font-size: 18px; color: #e0e0e0; }
+  .modal-close { background: transparent; color: #888; font-size: 20px; padding: 4px 10px; border-radius: 4px; }
+  .modal-close:hover { color: #fff; background: #333; }
+  .modal-body { padding: 20px; overflow-y: auto; flex: 1; font-size: 14px; line-height: 1.7; color: #ccc; }
+  .modal-body h3 { color: #4ade80; font-size: 16px; margin: 24px 0 12px 0; }
+  .modal-body h3:first-child { margin-top: 0; }
+  .modal-body p { margin-bottom: 10px; }
+  .modal-body ol, .modal-body ul { margin: 0 0 12px 20px; }
+  .modal-body li { margin-bottom: 6px; }
+  .modal-body code { background: #111; border: 1px solid #333; border-radius: 3px; padding: 1px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; color: #f0c674; }
+  .modal-body pre { background: #111; border: 1px solid #333; border-radius: 6px; padding: 12px; margin: 8px 0 12px 0; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  .modal-body pre code { background: none; border: none; padding: 0; color: #ccc; }
 </style>
 </head>
 <body>
@@ -77,12 +109,17 @@
     <div id="content-row">
       <div class="card" id="body-card">
         <h3>Body</h3>
-        <iframe id="body-frame" sandbox=""></iframe>
+        <iframe id="body-frame"></iframe>
       </div>
 
       <div class="card" id="attach-card">
         <h3>Attachment</h3>
         <div id="attach-info"></div>
+        <div id="attach-nav" class="hidden">
+          <button id="btn-attach-prev">&lt;</button>
+          <span id="attach-nav-text"></span>
+          <button id="btn-attach-next">&gt;</button>
+        </div>
         <div id="attach-preview-area"></div>
       </div>
     </div>
@@ -93,7 +130,10 @@
 
     <div class="card">
       <div id="actions">
+        <span id="logged-in-as"></span>
         <span id="status-text"></span>
+        <button id="btn-help">Help</button>
+        <span class="action-delim">|</span>
         <button id="btn-skip">Skip</button>
         <button id="btn-send">Send</button>
       </div>
@@ -112,45 +152,57 @@
   </div>
 </div>
 
+<div id="help-modal" class="hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Help</h2>
+      <button class="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <h3>File Templates</h3>
+      <p>Place these files in the same directory as your CSV file. Each file is a template that can use <code>{{ column_name }}</code> placeholders, which get replaced with values from each CSV row.</p>
+
+      <p><strong>CSV file</strong> — Your recipient data. The first row is headers; each subsequent row is one email. A <code>_status</code> column is added automatically to track sent/skipped/pending.</p>
+      <pre><code>name,email,company,invoice
+Alice,alice@example.com,Acme Inc,INV-001
+Bob,bob@example.com,Globex,INV-002</code></pre>
+
+      <p><strong>email_recipient_template.txt</strong> — Who to send to. Supports comma-separated addresses.</p>
+      <pre><code>{{ email }}</code></pre>
+
+      <p><strong>email_subject_template.txt</strong> — The email subject line.</p>
+      <pre><code>Invoice {{ invoice }} for {{ company }}</code></pre>
+
+      <p><strong>email_body_template.txt</strong> — The email body. Can be plain text or HTML.</p>
+      <pre><code>Hi {{ name }},
+
+Please find attached invoice {{ invoice }} for {{ company }}.
+
+Best regards,
+Finance Team</code></pre>
+
+      <p><strong>email_attachment_template.txt</strong> (optional) — Path to attachment file(s). Can resolve to empty (no attachment), a single path, or comma-separated multiple paths.</p>
+      <pre><code>invoices/{{ invoice }}.pdf</code></pre>
+      <p>Example with multiple attachments:</p>
+      <pre><code>invoices/{{ invoice }}.pdf, contracts/{{ company }}.docx</code></pre>
+
+      <p><strong>How it works:</strong> For each CSV row, the tool resolves all <code>{{ }}</code> placeholders in every template file using that row's column values. Emails are sent using the <code>gws gmail +send</code> command automatically. HTML bodies are detected and sent with the <code>--html</code> flag. You review each email in this portal before clicking Send.</p>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
 <script>
 (function() {
   const $ = (sel) => document.querySelector(sel);
-  const SAFE_BODY_TAGS = new Set(['a', 'b', 'blockquote', 'br', 'code', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'hr', 'i', 'li', 'ol', 'p', 'pre', 'span', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'u', 'ul']);
-  const DROP_BODY_TAGS = new Set(['audio', 'base', 'button', 'embed', 'form', 'iframe', 'img', 'input', 'link', 'math', 'meta', 'object', 'script', 'select', 'source', 'style', 'svg', 'textarea', 'track', 'video']);
-  const STRIP_ATTR_PREFIXES = ['on'];
-  const STRIP_ATTRS = new Set(['action', 'background', 'data', 'formaction', 'href', 'poster', 'sandbox', 'src', 'srcdoc', 'style', 'target', 'xlink:href']);
 
+  let attachments = [];
+  let attachIndex = 0;
   let attachCacheKey = '';
 
   function clearNode(node) {
-    while (node.firstChild) {
-      node.removeChild(node.firstChild);
-    }
-  }
-
-  function looksLikeHtml(text) {
-    return /<[a-z][\s\S]*>/i.test(text);
-  }
-
-  function sanitizeBodyNode(node) {
-    for (const child of Array.from(node.children)) {
-      const tag = child.tagName.toLowerCase();
-      if (DROP_BODY_TAGS.has(tag)) {
-        child.remove();
-        continue;
-      }
-      if (!SAFE_BODY_TAGS.has(tag)) {
-        child.replaceWith(...Array.from(child.childNodes));
-        continue;
-      }
-      for (const attr of Array.from(child.attributes)) {
-        const name = attr.name.toLowerCase();
-        if (STRIP_ATTRS.has(name) || STRIP_ATTR_PREFIXES.some(prefix => name.startsWith(prefix))) {
-          child.removeAttribute(attr.name);
-        }
-      }
-      sanitizeBodyNode(child);
-    }
+    while (node.firstChild) node.removeChild(node.firstChild);
   }
 
   function escapeHtml(s) {
@@ -160,42 +212,46 @@
   }
 
   function bodyMarkup(body) {
-    if (!looksLikeHtml(body)) {
+    if (!/<[a-z][\s\S]*>/i.test(body)) {
       return '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;">' + escapeHtml(body) + '</pre>';
     }
-    const doc = new DOMParser().parseFromString(body, 'text/html');
-    sanitizeBodyNode(doc.body);
-    return doc.body.innerHTML;
+    return body;
   }
 
   function renderBody(body) {
     return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:14px;padding:12px;margin:0;color:#333;line-height:1.6;}table{border-collapse:collapse;}td,th{border:1px solid #ddd;padding:6px;vertical-align:top;}blockquote{border-left:3px solid #ddd;margin:0;padding-left:12px;color:#555;}pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}</style></head><body>' + bodyMarkup(body) + '</body></html>';
   }
 
-  function setAttachmentInfo(path, size) {
+  function showAttachment() {
+    const a = attachments[attachIndex];
+    if (!a) return;
     const info = $('#attach-info');
     clearNode(info);
     const strong = document.createElement('strong');
-    strong.textContent = path;
+    strong.textContent = a.path;
     info.appendChild(strong);
-    if (size) {
-      info.appendChild(document.createTextNode(' (' + size + ')'));
-    }
-  }
+    if (a.size) info.appendChild(document.createTextNode(' (' + a.size + ')'));
 
-  function setAttachmentPreview(r) {
+    if (attachments.length > 1) {
+      $('#attach-nav').classList.remove('hidden');
+      $('#attach-nav-text').textContent = (attachIndex + 1) + ' of ' + attachments.length;
+      $('#btn-attach-prev').disabled = attachIndex === 0;
+      $('#btn-attach-next').disabled = attachIndex === attachments.length - 1;
+    } else {
+      $('#attach-nav').classList.add('hidden');
+    }
+
     const area = $('#attach-preview-area');
     clearNode(area);
-    const bust = '?t=' + Date.now();
+    const bust = '?index=' + attachIndex + '&t=' + Date.now();
 
-    if (r.attachExt === 'pdf') {
+    if (a.ext === 'pdf') {
       const iframe = document.createElement('iframe');
       iframe.src = '/api/attachment' + bust + '#toolbar=0';
       area.appendChild(iframe);
       return;
     }
-
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(r.attachExt)) {
+    if (['png','jpg','jpeg','gif','webp','svg','bmp'].includes(a.ext)) {
       const img = document.createElement('img');
       img.src = '/api/attachment' + bust;
       img.style.maxWidth = '100%';
@@ -204,38 +260,64 @@
       area.appendChild(img);
       return;
     }
-
-    if (r.attachExt === 'txt' || r.attachExt === 'docx') {
+    if (a.ext === 'docx') {
       const loading = document.createElement('pre');
       loading.textContent = 'Loading preview...';
       area.appendChild(loading);
-      const cacheKey = attachCacheKey;
-      fetch('/api/preview').then(resp => {
-        if (attachCacheKey !== cacheKey) {
-          return null;
-        }
-        if (resp.status === 204) {
+      const key = attachCacheKey + ':' + attachIndex;
+      fetch('/api/attachment' + bust)
+        .then(resp => {
+          if (attachCacheKey + ':' + attachIndex !== key) return null;
+          return resp.arrayBuffer();
+        })
+        .then(buf => {
+          if (!buf || attachCacheKey + ':' + attachIndex !== key) return null;
+          return mammoth.convertToHtml({arrayBuffer: buf});
+        })
+        .then(result => {
+          if (!result || attachCacheKey + ':' + attachIndex !== key) return;
           clearNode(area);
-          return null;
-        }
+          const div = document.createElement('div');
+          div.className = 'docx-preview';
+          div.innerHTML = result.value;
+          area.appendChild(div);
+        })
+        .catch(() => {
+          if (attachCacheKey + ':' + attachIndex !== key) return;
+          clearNode(area);
+          const pre = document.createElement('pre');
+          pre.textContent = 'Could not preview this file.';
+          area.appendChild(pre);
+        });
+      return;
+    }
+    if (a.ext === 'txt') {
+      const loading = document.createElement('pre');
+      loading.textContent = 'Loading preview...';
+      area.appendChild(loading);
+      const key = attachCacheKey + ':' + attachIndex;
+      fetch('/api/preview?index=' + attachIndex).then(resp => {
+        if (attachCacheKey + ':' + attachIndex !== key) return null;
+        if (resp.status === 204) { clearNode(area); return null; }
         return resp.text();
       }).then(text => {
-        if (!text || attachCacheKey !== cacheKey) {
-          return;
-        }
+        if (!text || attachCacheKey + ':' + attachIndex !== key) return;
         clearNode(area);
         const pre = document.createElement('pre');
         pre.textContent = text;
         area.appendChild(pre);
-      }).catch(() => {
-        if (attachCacheKey === cacheKey) {
-          clearNode(area);
-        }
-      });
+      }).catch(() => clearNode(area));
     }
   }
 
+  $('#btn-attach-prev').onclick = () => { if (attachIndex > 0) { attachIndex--; showAttachment(); } };
+  $('#btn-attach-next').onclick = () => { if (attachIndex < attachments.length - 1) { attachIndex++; showAttachment(); } };
+
   function updateUI(data) {
+    if (data.loggedInAs) {
+      $('#logged-in-as').textContent = 'Logged in as ' + data.loggedInAs;
+    }
+
     if (data.state === 'done') {
       $('#main-view').classList.add('hidden');
       $('#done-screen').classList.remove('hidden');
@@ -272,28 +354,29 @@
     frame.onload = function() {
       try {
         const doc = frame.contentDocument;
-        if (!doc) {
-          return;
-        }
+        if (!doc) return;
         const h = doc.documentElement.scrollHeight;
         frame.style.height = Math.min(Math.max(h + 4, 80), 300) + 'px';
       } catch(e) {}
     };
 
-    if (r.attach) {
+    const atts = r.attachments || [];
+    if (atts.length > 0) {
       $('#attach-card').classList.remove('hidden');
-      setAttachmentInfo(r.attach, r.attachSize);
-
-      const newKey = r.attach;
+      const newKey = atts.map(a => a.path).join(',');
       if (attachCacheKey !== newKey) {
         attachCacheKey = newKey;
-        setAttachmentPreview(r);
+        attachments = atts;
+        attachIndex = 0;
+        showAttachment();
       }
     } else {
       $('#attach-card').classList.add('hidden');
       clearNode($('#attach-info'));
       clearNode($('#attach-preview-area'));
+      $('#attach-nav').classList.add('hidden');
       attachCacheKey = '';
+      attachments = [];
     }
 
     if (data.state === 'error' && data.error) {
@@ -319,6 +402,10 @@
     else { st.textContent = ''; }
   }
 
+  $('#btn-help').onclick = () => { $('#help-modal').classList.remove('hidden'); };
+  $('#help-modal .modal-backdrop').onclick = () => { $('#help-modal').classList.add('hidden'); };
+  $('#help-modal .modal-close').onclick = () => { $('#help-modal').classList.add('hidden'); };
+
   $('#btn-send').onclick = () => { if (!$('#btn-send').disabled) fetch('/api/send', {method:'POST'}); };
   $('#btn-skip').onclick = () => { if (!$('#btn-skip').disabled) fetch('/api/skip', {method:'POST'}); };
 
@@ -327,7 +414,7 @@
     try { updateUI(JSON.parse(e.data)); } catch(err) { console.error('SSE parse error:', err); }
   };
   events.onerror = () => {
-    setTimeout(() => { document.title = 'auto-email (disconnected)'; }, 1000);
+    setTimeout(() => { document.title = 'Batched Email Sending Portal (disconnected)'; }, 1000);
   };
 
   fetch('/api/status').then(r => r.json()).then(updateUI).catch(console.error);

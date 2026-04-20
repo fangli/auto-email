@@ -1,20 +1,21 @@
 # auto-email
 
-An interactive CLI tool that sends emails one-by-one by executing an external command (e.g., `gws gmail +send`). It reads a CSV recipient list and template files, resolves templates per row, validates everything upfront, then walks you through sending each email with a styled TUI.
+A web-based batch email sending tool powered by the Google Workspace CLI (`gws`). Reads a CSV task list and template files, resolves templates per row, validates everything upfront, then serves a web UI for reviewing and sending each email one-by-one.
 
 ## Features
 
 - Template-based email composition with `{{variable}}` syntax resolved from CSV columns
-- Full validation before sending: email addresses, attachment paths, command availability, unresolved variables
-- Styled full-screen TUI with progress tracking
-- Scrollable attachment preview for PDF, TXT, and DOCX files
+- Full validation before sending: email addresses, attachment paths
+- Web UI with real-time progress tracking via SSE
+- Attachment preview for PDF, TXT, DOCX, and image files with multi-attachment navigation
+- HTML body auto-detection
 - Status tracking via `_status` column in the CSV — safe to interrupt and resume
-- One-at-a-time sending with Enter to confirm, ESC to abort
+- Google account authentication check at startup with guided setup
 
 ## Requirements
 
-- Go 1.22+
-- `pdftotext` (from [poppler-utils](https://poppler.freedesktop.org/)) for PDF attachment preview (optional — preview is skipped if not installed)
+- [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli/releases) — installed and authenticated
+- `pdftotext` (from [poppler-utils](https://poppler.freedesktop.org/)) for PDF attachment preview (optional)
 
 ## Install
 
@@ -36,12 +37,11 @@ Create a working directory with these files:
 
 | File | Purpose |
 |------|---------|
-| `email_recipients.csv` | CSV with header row containing recipient data |
-| `email_address_template.txt` | Template for the recipient email address |
+| `tasks.csv` | CSV with header row containing recipient data |
+| `email_recipient_template.txt` | Template for the recipient email address |
 | `email_subject_template.txt` | Template for the email subject |
 | `email_body_template.txt` | Template for the email body |
-| `email_attachment_template.txt` | Template for the attachment file path |
-| `executable_commandline_template.txt` | Template for the email-sending command |
+| `email_attachment_template.txt` | Template for attachment file path(s) (optional) |
 
 Then run:
 
@@ -50,35 +50,56 @@ cd /path/to/working-directory
 auto-email
 ```
 
+Or specify a custom CSV file:
+
+```bash
+auto-email --csv my-recipients.csv
+```
+
+The tool checks that `gws` is installed and authenticated before launching. If not, it prints setup instructions and exits.
+
 ### Templates
 
 Templates use `{{column_name}}` syntax. Whitespace inside brackets is ignored, so `{{col}}` and `{{ col }}` are equivalent.
 
-The command template has four internal variables resolved from the other templates: `{{_address}}`, `{{_subject}}`, `{{_body}}`, `{{_attachment}}`. All other `{{var}}` references are resolved from CSV columns.
+Example `tasks.csv`:
 
-Example `executable_commandline_template.txt`:
+```csv
+name,email,company,invoice
+Alice,alice@example.com,Acme Inc,INV-001
+Bob,bob@example.com,Globex,INV-002
+```
+
+Example `email_recipient_template.txt`:
 
 ```
-gws gmail +send --to {{_address}} --subject {{_subject}} --body {{_body}} --attach {{_attachment}} --from {{sender_email}}
+{{ email }}
+```
+
+Example `email_attachment_template.txt` (supports comma-separated multiple paths):
+
+```
+invoices/{{ invoice }}.pdf, contracts/{{ company }}.docx
 ```
 
 ### Status Tracking
 
 The CSV's `_status` column tracks which emails have been sent. If the column doesn't exist, it's added automatically with all rows set to `Pending`. On successful send, the row is updated to `Sent` and the CSV is saved immediately. Only `Pending` rows are processed, so you can safely interrupt and re-run.
 
-### TUI Controls
+### Web UI
 
-| Key | Action |
-|-----|--------|
-| Enter | Send the current email (or retry on error) |
-| ESC | Cancel and exit |
-| ↑↓ / PgUp·PgDn | Scroll attachment preview |
+The tool starts a local web server at `http://127.0.0.1:8123` and opens your browser. The UI shows:
+
+- Progress bar and counters
+- Current recipient details (to, subject, body preview)
+- Attachment preview with `< | >` navigation for multiple attachments
+- Send / Skip / Help buttons
+- Logged-in Google account
 
 ## Testing
 
 ```bash
 go test ./... -count=1    # all tests
-go test -run TestFull     # full flow tests only
 ```
 
 ## License
