@@ -626,13 +626,16 @@ func (s *serverState) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path, ok := s.currentAttachmentPathLocked()
+	_, rec, ok := s.currentRecipientLocked()
 	s.mu.Unlock()
-	if !ok {
+	if !ok || strings.TrimSpace(rec.Attach) == "" {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	path := rec.Attach
+	if !filepath.IsAbs(path) && s.app.BaseDir != "" {
+		path = filepath.Join(s.app.BaseDir, path)
+	}
 	http.ServeFile(w, r, path)
 }
 
