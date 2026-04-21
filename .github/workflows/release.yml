@@ -18,6 +18,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Run tests
+        run: go test ./... -count=1
+
       - name: Build all targets
         run: |
           version="${GITHUB_REF_NAME#release-}"
