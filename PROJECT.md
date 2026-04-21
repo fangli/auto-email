@@ -55,9 +55,10 @@ Once bootstrap completes, the app starts an HTTP server at `127.0.0.1:8123` and 
 2. Recipient details: To, Subject, Body (rendered in iframe).
 3. Attachment preview with `< N of M >` navigation for multiple attachments. Supports PDF (inline), images, TXT, and DOCX (text extraction).
 4. Send / Skip buttons. Retry on error.
-5. Help modal with template file documentation.
-6. Logged-in Google account display.
-7. Real-time updates via Server-Sent Events (SSE).
+5. Auto-send mode with configurable interval (5/10/30/60/120s). Countdown starts after each successful send. Stops on error or completion.
+6. Help modal with template file documentation.
+7. Logged-in Google account display.
+8. Real-time updates via Server-Sent Events (SSE).
 
 ### Status Tracking
 

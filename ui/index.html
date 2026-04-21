@@ -66,6 +66,10 @@
 
   #btn-help { background: transparent; color: #888; padding: 10px 12px; }
   #btn-help:hover { color: #ccc; }
+  #auto-send-label { display:flex; align-items:center; gap:6px; font-size:13px; color:#aaa; cursor:pointer; user-select:none; }
+  #auto-send-interval { background:#333; color:#ccc; border:1px solid #555; border-radius:4px; padding:2px 4px; font-size:13px; }
+  #auto-send-interval:disabled { opacity:0.4; cursor:not-allowed; }
+  #btn-send.auto-send-warning { background:#f59e0b; color:#000; }
   .action-delim { color: #444; font-size: 18px; user-select: none; }
 
   #attach-nav { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-shrink: 0; font-size: 13px; color: #aaa; }
@@ -132,6 +136,18 @@
       <div id="actions">
         <span id="logged-in-as"></span>
         <span id="status-text"></span>
+        <label id="auto-send-label">
+          <input type="checkbox" id="auto-send-check">
+          Auto send every
+          <select id="auto-send-interval">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="30" selected>30</option>
+            <option value="60">60</option>
+            <option value="120">120</option>
+          </select>
+          s
+        </label>
         <button id="btn-help">Help</button>
         <span class="action-delim">|</span>
         <button id="btn-skip">Skip</button>
@@ -142,7 +158,7 @@
 
   <div id="done-screen" class="hidden">
     <div class="card">
-      <h2>All Done</h2>
+      <h2>🎉 Congrats! All tasks have been completed.</h2>
       <div class="stat" id="stat-total"></div>
       <div class="stat" id="stat-sent-ever"></div>
       <div class="stat" id="stat-sent-run"></div>
@@ -200,6 +216,46 @@ Finance Team</code></pre>
   let attachments = [];
   let attachIndex = 0;
   let attachCacheKey = '';
+
+  const autoSend = { enabled: false, interval: 30, countdownId: null, remaining: 0 };
+
+  function startAutoCountdown() {
+    stopAutoCountdown();
+    autoSend.remaining = autoSend.interval;
+    updateAutoSendButton();
+    autoSend.countdownId = setInterval(() => {
+      autoSend.remaining--;
+      updateAutoSendButton();
+      if (autoSend.remaining <= 0) {
+        stopAutoCountdown();
+        fetch('/api/send', { method: 'POST' });
+      }
+    }, 1000);
+  }
+
+  function stopAutoCountdown() {
+    if (autoSend.countdownId) { clearInterval(autoSend.countdownId); autoSend.countdownId = null; }
+    autoSend.remaining = 0;
+  }
+
+  function stopAutoSend() {
+    autoSend.enabled = false;
+    stopAutoCountdown();
+    $('#auto-send-check').checked = false;
+    $('#auto-send-interval').disabled = false;
+    updateAutoSendButton();
+  }
+
+  function updateAutoSendButton() {
+    const btn = $('#btn-send');
+    if (autoSend.enabled && autoSend.remaining > 0) {
+      btn.textContent = (btn.dataset.sendLabel || 'Send') + ' (in ' + autoSend.remaining + 's)';
+      btn.disabled = true;
+      btn.classList.add('auto-send-warning');
+    } else {
+      btn.classList.remove('auto-send-warning');
+    }
+  }
 
   function clearNode(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -404,6 +460,19 @@ Finance Team</code></pre>
     else if (sent) { st.className = 'status-sent'; st.textContent = 'Sent!'; }
     else if (isError) { st.className = 'status-error'; st.textContent = 'Failed'; }
     else { st.textContent = ''; }
+
+    $('#btn-send').dataset.sendLabel = sendLabel;
+    if (autoSend.enabled) {
+      if (isError || data.state === 'done') {
+        stopAutoSend();
+      } else if (data.state === 'preview') {
+        if (!autoSend.countdownId) startAutoCountdown();
+        updateAutoSendButton();
+      } else if (sending || sent) {
+        stopAutoCountdown();
+        $('#btn-send').classList.add('auto-send-warning');
+      }
+    }
   }
 
   $('#btn-help').onclick = () => { $('#help-modal').classList.remove('hidden'); };
@@ -412,6 +481,19 @@ Finance Team</code></pre>
 
   $('#btn-send').onclick = () => { if (!$('#btn-send').disabled) fetch('/api/send', {method:'POST'}); };
   $('#btn-skip').onclick = () => { if (!$('#btn-skip').disabled) fetch('/api/skip', {method:'POST'}); };
+
+  $('#auto-send-check').onchange = () => {
+    autoSend.enabled = $('#auto-send-check').checked;
+    $('#auto-send-interval').disabled = autoSend.enabled;
+    if (autoSend.enabled) {
+      autoSend.interval = parseInt($('#auto-send-interval').value, 10);
+      if (!$('#btn-send').disabled) startAutoCountdown();
+    } else {
+      stopAutoCountdown();
+      updateAutoSendButton();
+      fetch('/api/status').then(r => r.json()).then(updateUI).catch(console.error);
+    }
+  };
 
   const events = new EventSource('/events');
   events.onmessage = (e) => {

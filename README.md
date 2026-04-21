@@ -94,6 +94,7 @@ The tool starts a local web server at `http://127.0.0.1:8123` and opens your bro
 - Current recipient details (to, subject, body preview)
 - Attachment preview with `< | >` navigation for multiple attachments
 - Send / Skip / Help buttons
+- Auto-send mode with configurable interval — countdown restarts after each successful send, stops on error
 - Logged-in Google account
 
 ## Testing
