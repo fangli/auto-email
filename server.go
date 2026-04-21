@@ -511,6 +511,9 @@ func defaultSendCmd(ctx context.Context, rec Recipient, baseDir string) (string,
 		args = append(args, "-a", resolveRelPath(baseDir, a))
 	}
 	cmd := exec.CommandContext(ctx, "gws", args...)
+	if gwsEnv != nil {
+		cmd.Env = gwsEnv
+	}
 	return runCommandCombinedLimited(cmd, maxCommandOutputBytes)
 }
 

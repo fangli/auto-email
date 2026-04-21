@@ -41,6 +41,7 @@ Create a working directory with these files:
 | `email_subject_template.txt` | Template for the email subject |
 | `email_body_template.txt` | Template for the email body |
 | `email_attachment_template.txt` | Template for attachment file path(s) (optional) |
+| `gws_settings.txt` | Environment variables for `gws` CLI (optional) |
 
 Then run:
 
@@ -56,6 +57,16 @@ auto-email --csv my-recipients.csv
 ```
 
 The tool checks that `gws` is installed and authenticated before launching. If not, it prints setup instructions and exits.
+
+### GWS Settings
+
+If `gws_settings.txt` exists in the working directory, its `KEY=VALUE` lines are passed as environment variables to all `gws` commands. This is useful for configuring client credentials or the keyring backend without modifying your shell environment:
+
+```
+GOOGLE_WORKSPACE_CLI_CLIENT_ID=your-client-id
+GOOGLE_WORKSPACE_CLI_CLIENT_SECRET=your-client-secret
+GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file
+```
 
 ### Templates
 

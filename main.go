@@ -16,7 +16,30 @@ import (
 var (
 	version = "dev"
 	gitRev  = "unknown"
+	gwsEnv  []string
 )
+
+func loadGwsEnv() {
+	data, err := os.ReadFile("gws_settings.txt")
+	if err != nil {
+		return
+	}
+	gwsEnv = os.Environ()
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && strings.Contains(line, "=") {
+			gwsEnv = append(gwsEnv, line)
+		}
+	}
+}
+
+func gwsCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	if gwsEnv != nil {
+		cmd.Env = gwsEnv
+	}
+	return cmd
+}
 
 func fatal(msg string) {
 	fmt.Fprint(os.Stderr, msg)
@@ -214,7 +237,7 @@ func checkGws() (string, error) {
 		return "", fmt.Errorf("'gws' (Google Workspace CLI) is not installed or not in PATH.\n\n  Install it from: https://github.com/googleworkspace/cli/releases\n  Then run: gws auth setup")
 	}
 
-	out, err := exec.Command("gws", "gmail", "users", "getProfile", "--params", `{"userId":"me"}`).Output()
+	out, err := gwsCommand("gws", "gmail", "users", "getProfile", "--params", `{"userId":"me"}`).Output()
 	if err != nil {
 		return "", fmt.Errorf("'gws' is not authenticated. Run the following to sign in:\n\n  gws auth setup\n\n  Or if you've already set up a project:\n\n  gws auth login")
 	}
@@ -230,6 +253,7 @@ func checkGws() (string, error) {
 
 func main() {
 	fmt.Printf("Auto Email Sender v%s (%s)\n\n", version, gitRev)
+	loadGwsEnv()
 	csvFile := "tasks.csv"
 	dryrun := false
 	for i, arg := range os.Args[1:] {
