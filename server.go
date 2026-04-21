@@ -560,7 +560,7 @@ func defaultSendCmd(ctx context.Context, rec Recipient, baseDir string) (string,
 	for _, a := range rec.Attachments {
 		args = append(args, "-a", resolveRelPath(baseDir, a))
 	}
-	cmd := exec.CommandContext(ctx, "gws", args...)
+	cmd := exec.CommandContext(ctx, gwsBin, args...)
 	if gwsEnv != nil {
 		cmd.Env = gwsEnv
 	}
@@ -568,7 +568,7 @@ func defaultSendCmd(ctx context.Context, rec Recipient, baseDir string) (string,
 }
 
 func dryrunSendCmd(_ context.Context, rec Recipient, baseDir string) (string, error) {
-	args := []string{"gws", "gmail", "+send", "--to", rec.Address, "--subject", rec.Subject, "--body", rec.Body}
+	args := []string{gwsBin, "gmail", "+send", "--to", rec.Address, "--subject", rec.Subject, "--body", rec.Body}
 	if looksLikeHtml(rec.Body) {
 		args = append(args, "--html")
 	}

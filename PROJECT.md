@@ -17,7 +17,7 @@ When the executable starts, it:
    - `email_subject_template.txt` — Template for the email subject.
    - `email_body_template.txt` — Template for the email body.
    - `email_attachment_template.txt` (optional) — Template for attachment file path(s). Supports comma-separated multiple paths.
-   - `gws_settings.txt` (optional) — `KEY=VALUE` environment variables passed to all `gws` commands (auth check and send).
+   - `.env` (optional) — `KEY=VALUE` environment variables passed to all `gws` commands (auth check and send).
 
 ### CSV Value Normalization
 
