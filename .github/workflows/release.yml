@@ -40,7 +40,8 @@ jobs:
 
             archive_name="auto-email-${version}-${os}-${arch}"
             mkdir -p "dist/${archive_name}"
-            cp -rf "dist/auto-email${ext}" email_template_example README.md "dist/${archive_name}/"
+            cp -rf email_template_example README.md "dist/${archive_name}/"
+            cp -rf "dist/auto-email${ext}" "dist/${archive_name}/email_template_example/"
 
             cd dist
             if [ "$os" = "windows" ]; then
