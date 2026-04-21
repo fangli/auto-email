@@ -268,7 +268,10 @@ func checkGws() (string, error) {
 }
 
 func main() {
-	fmt.Printf("Auto Email Sender v%s (%s)\n\n", version, gitRev)
+	fmt.Printf("Auto Email Sender v%s (%s)\n", version, gitRev)
+	fmt.Println("Created by Fang Li 2026")
+	fmt.Println("Homepage: https://github.com/fangli/auto-email")
+	fmt.Println(" ")
 	loadGwsEnv()
 	csvFile := "tasks.csv"
 	dryrun := false
