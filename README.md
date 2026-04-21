@@ -15,7 +15,6 @@ A web-based batch email sending tool powered by the Google Workspace CLI (`gws`)
 ## Requirements
 
 - [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli/releases) — installed and authenticated
-- `pdftotext` (from [poppler-utils](https://poppler.freedesktop.org/)) for PDF attachment preview (optional)
 
 ## Install
 

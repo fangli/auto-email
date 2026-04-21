@@ -139,7 +139,7 @@ Resolution order per CSV row:
 ### Attachment Preview
 
 Supported formats:
-- `.pdf` — shells out to `pdftotext` (poppler-utils); falls back gracefully if not installed. Inline iframe preview in web UI.
+- `.pdf` — rendered inline via iframe in web UI (browser-native PDF viewer).
 - `.txt` — reads file directly server-side, up to 1 MB. Rendered in `<pre>` tag.
 - `.docx` — rendered client-side via mammoth.js (fetches raw file from `/api/attachment`, converts to semantic HTML in browser).
 - Images (png/jpg/gif/webp/svg/bmp) — displayed inline via `<img>` tag.

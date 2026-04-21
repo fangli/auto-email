@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -528,19 +527,8 @@ func TestExtractPreviewText(t *testing.T) {
 		}
 	})
 	t.Run("nonexistent_returns_empty", func(t *testing.T) {
-		if got := extractPreviewText("/no/such/file.pdf"); got != "" {
+		if got := extractPreviewText("/no/such/file.txt"); got != "" {
 			t.Errorf("expected empty, got %q", got)
-		}
-	})
-	t.Run("valid_pdf_returns_text", func(t *testing.T) {
-		if _, err := exec.LookPath("pdftotext"); err != nil {
-			t.Skip("pdftotext not installed")
-		}
-		f := filepath.Join(t.TempDir(), "test.pdf")
-		os.WriteFile(f, minimalPDF("Hello World"), 0644)
-		got := extractPreviewText(f)
-		if !strings.Contains(got, "Hello") {
-			t.Errorf("expected text containing 'Hello', got %q", got)
 		}
 	})
 	t.Run("txt_returns_content", func(t *testing.T) {

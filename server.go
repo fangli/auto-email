@@ -52,7 +52,6 @@ type serverState struct {
 
 const (
 	sendCommandTimeout    = 2 * time.Minute
-	previewCommandTimeout = 10 * time.Second
 	maxPreviewBytes       = 1 << 20
 	maxCommandOutputBytes = 64 << 10
 	maxControlBodyBytes   = 1
@@ -187,15 +186,6 @@ type statusSnapshot struct {
 
 func extractPreviewText(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".pdf":
-		ctx, cancel := context.WithTimeout(context.Background(), previewCommandTimeout)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "pdftotext", path, "-")
-		out, err := runCommandCombinedLimited(cmd, maxPreviewBytes)
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(out)
 	case ".txt":
 		f, err := os.Open(path)
 		if err != nil {
