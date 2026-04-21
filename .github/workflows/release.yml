@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'release-*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build all targets
+        run: |
+          version="${GITHUB_REF_NAME#release-}"
+          mkdir -p dist
+
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+          for target in $targets; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            ext=""
+            [ "$os" = "windows" ] && ext=".exe"
+
+            echo "Building $os/$arch..."
+            GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "dist/auto-email${ext}" .
+
+            archive_name="auto-email-${version}-${os}-${arch}"
+            mkdir -p "dist/${archive_name}"
+            cp "dist/auto-email${ext}" README.md "dist/${archive_name}/"
+
+            cd dist
+            if [ "$os" = "windows" ]; then
+              zip "${archive_name}.zip" -r "${archive_name}"
+            else
+              tar czf "${archive_name}.tar.gz" "${archive_name}"
+            fi
+            cd ..
+
+            rm -rf "dist/${archive_name}" "dist/auto-email${ext}"
+          done
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#release-}"
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "v${version}" \
+            --generate-notes
