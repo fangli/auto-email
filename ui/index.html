@@ -208,6 +208,14 @@ Finance Team</code></pre>
   </div>
 </div>
 
+<div id="terminated-modal" class="hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box" style="max-width:500px;inset:auto;top:50%;left:50%;transform:translate(-50%,-50%);position:fixed;">
+    <div class="modal-header"><h2 style="color:#ef4444;">Application Terminated</h2></div>
+    <div class="modal-body"><p id="terminated-msg"></p></div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
 <script>
 (function() {
@@ -373,6 +381,12 @@ Finance Team</code></pre>
   $('#btn-attach-next').onclick = () => { if (attachIndex < attachments.length - 1) { attachIndex++; showAttachment(); } };
 
   function updateUI(data) {
+    if (data.state === 'terminated') {
+      $('#terminated-modal').classList.remove('hidden');
+      $('#terminated-msg').textContent = data.error;
+      return;
+    }
+
     if (data.loggedInAs) {
       $('#logged-in-as').textContent = 'Logged in as ' + data.loggedInAs;
     }

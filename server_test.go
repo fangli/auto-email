@@ -713,3 +713,95 @@ func TestIndexServesHTML(t *testing.T) {
 		t.Errorf("content-type = %q", ct)
 	}
 }
+
+// --- CSV Monitor ---
+
+func TestCSVMonitorDetectsExternalChange(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.csv")
+	os.WriteFile(f, []byte("a,b\n1,2\n"), 0644)
+	mon := newCSVMonitor(f)
+
+	if mon.check() {
+		t.Fatal("expected no change initially")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	os.WriteFile(f, []byte("a,b\n1,2\n3,4\n"), 0644)
+
+	if !mon.check() {
+		t.Fatal("expected change detected after external write")
+	}
+}
+
+func TestCSVMonitorPauseResume(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "test.csv")
+	os.WriteFile(f, []byte("a,b\n1,2\n"), 0644)
+	mon := newCSVMonitor(f)
+
+	mon.pause()
+	time.Sleep(50 * time.Millisecond)
+	os.WriteFile(f, []byte("a,b\nchanged\n"), 0644)
+
+	if mon.check() {
+		t.Fatal("expected no change while paused")
+	}
+
+	mon.resume()
+
+	if mon.check() {
+		t.Fatal("expected no change right after resume (modtime updated)")
+	}
+}
+
+func TestSafeWriteCSVDoesNotTriggerMonitor(t *testing.T) {
+	s, _ := setupSingleTest(t)
+	s.csvMon = newCSVMonitor(s.app.CSVPath)
+
+	s.mu.Lock()
+	s.app.Rows[0][1] = "Sent"
+	err := s.safeWriteCSV()
+	s.mu.Unlock()
+
+	if err != nil {
+		t.Fatalf("safeWriteCSV error: %v", err)
+	}
+	if s.csvMon.check() {
+		t.Fatal("monitor should not detect internal write")
+	}
+}
+
+func TestSafeWriteCSVNilMonitor(t *testing.T) {
+	s, _ := setupSingleTest(t)
+
+	s.mu.Lock()
+	err := s.safeWriteCSV()
+	s.mu.Unlock()
+
+	if err != nil {
+		t.Fatalf("safeWriteCSV with nil monitor error: %v", err)
+	}
+}
+
+func TestSendDoesNotTriggerMonitor(t *testing.T) {
+	s, ts := setupSingleTest(t)
+	s.csvMon = newCSVMonitor(s.app.CSVPath)
+
+	postAction(t, ts, "/api/send").Body.Close()
+	waitForState(t, ts, "sent", 5*time.Second)
+
+	if s.csvMon.check() {
+		t.Fatal("send should not trigger monitor")
+	}
+}
+
+func TestSkipDoesNotTriggerMonitor(t *testing.T) {
+	s, ts := setupSingleTest(t)
+	s.csvMon = newCSVMonitor(s.app.CSVPath)
+
+	postAction(t, ts, "/api/skip").Body.Close()
+	waitForState(t, ts, "done", 5*time.Second)
+
+	if s.csvMon.check() {
+		t.Fatal("skip should not trigger monitor")
+	}
+}

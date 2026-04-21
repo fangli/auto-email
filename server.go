@@ -48,6 +48,56 @@ type serverState struct {
 	cancel      context.CancelFunc
 	sendCmdFunc func(ctx context.Context, rec Recipient, baseDir string) (string, error)
 	dryrun      bool
+	csvMon      *csvMonitor
+}
+
+type csvMonitor struct {
+	mu      sync.Mutex
+	path    string
+	modTime time.Time
+	paused  bool
+}
+
+func newCSVMonitor(path string) *csvMonitor {
+	info, _ := os.Stat(path)
+	var mt time.Time
+	if info != nil {
+		mt = info.ModTime()
+	}
+	return &csvMonitor{path: path, modTime: mt}
+}
+
+func (m *csvMonitor) pause() { m.mu.Lock(); m.paused = true; m.mu.Unlock() }
+
+func (m *csvMonitor) resume() {
+	info, _ := os.Stat(m.path)
+	m.mu.Lock()
+	if info != nil {
+		m.modTime = info.ModTime()
+	}
+	m.paused = false
+	m.mu.Unlock()
+}
+
+func (m *csvMonitor) check() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.paused {
+		return false
+	}
+	info, err := os.Stat(m.path)
+	if err != nil {
+		return false
+	}
+	return !info.ModTime().Equal(m.modTime)
+}
+
+func (s *serverState) safeWriteCSV() error {
+	if s.csvMon != nil {
+		s.csvMon.pause()
+		defer s.csvMon.resume()
+	}
+	return saveCSV(s.app.CSVPath, s.app.Headers, s.app.Rows)
 }
 
 const (
@@ -582,7 +632,7 @@ func (s *serverState) handleSend(w http.ResponseWriter, r *http.Request) {
 		s.app.Recipients[recIdx].Status = "Sent"
 		s.sentRun++
 		s.sentEver++
-		if err := saveCSV(s.app.CSVPath, s.app.Headers, s.app.Rows); err != nil {
+		if err := s.safeWriteCSV(); err != nil {
 			s.setErrorStateLocked(fmt.Sprintf("email sent but failed to update CSV: %v\nUse Skip to continue without resending.", err))
 			return
 		}
@@ -623,7 +673,7 @@ func (s *serverState) handleSkip(w http.ResponseWriter, r *http.Request) {
 	}
 	s.app.Rows[rec.Row][s.app.StatusCol] = "Skipped"
 	s.app.Recipients[recIdx].Status = "Skipped"
-	if err := saveCSV(s.app.CSVPath, s.app.Headers, s.app.Rows); err != nil {
+	if err := s.safeWriteCSV(); err != nil {
 		s.setErrorStateLocked(fmt.Sprintf("failed to update CSV: %v", err))
 		http.Error(w, "failed to update CSV", http.StatusInternalServerError)
 		return
@@ -697,6 +747,30 @@ func runServer(app *AppData, pending []int, sentEver int, dryrun bool) Summary {
 	if dryrun {
 		s.sendCmdFunc = dryrunSendCmd
 	}
+
+	s.csvMon = newCSVMonitor(app.CSVPath)
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if s.csvMon.check() {
+					msg := "The CSV file has been modified from external source. In order to protect the file records, this application exited itself purposely."
+					fmt.Fprintf(os.Stderr, "\n%s\n", msg)
+					s.mu.Lock()
+					s.state = "terminated"
+					s.lastError = msg
+					s.broadcastStateLocked()
+					s.mu.Unlock()
+					time.Sleep(500 * time.Millisecond)
+					os.Exit(1)
+				}
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
