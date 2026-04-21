@@ -1,0 +1,8 @@
+Hi {{ name }},
+
+Please find the latest updates for the {{ department }} department at {{ company }}.
+
+If you have any questions, feel free to reach out.
+
+Best regards,
+Finance Team

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -16,6 +17,16 @@ var (
 	version = "dev"
 	gitRev  = "unknown"
 )
+
+func fatal(msg string) {
+	fmt.Fprint(os.Stderr, msg)
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(os.Stderr, "\nPress any key to exit...")
+		var b [1]byte
+		os.Stdin.Read(b[:])
+	}
+	os.Exit(1)
+}
 
 type AppData struct {
 	Headers    []string
@@ -231,32 +242,28 @@ func main() {
 	}
 	csvPath, err := filepath.Abs(csvFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot resolve CSV path: %v\n", err)
-		os.Exit(1)
+		fatal(fmt.Sprintf("Error: cannot resolve CSV path: %v\n", err))
 	}
 	baseDir := filepath.Dir(csvPath)
 
+	var errs []string
+
 	loggedInAs, err := checkGws()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		errs = append(errs, fmt.Sprintf("Error: %v", err))
 	}
-	fmt.Printf("Authenticated as: %s\n", loggedInAs)
 
 	addrTmpl, err := readTemplate("email_recipient_template.txt")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		errs = append(errs, fmt.Sprintf("Error: %v", err))
 	}
 	subjectTmpl, err := readTemplate("email_subject_template.txt")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		errs = append(errs, fmt.Sprintf("Error: %v", err))
 	}
 	bodyTmpl, err := readTemplate("email_body_template.txt")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		errs = append(errs, fmt.Sprintf("Error: %v", err))
 	}
 	attachTmpl, err := readTemplate("email_attachment_template.txt")
 	if err != nil {
@@ -265,9 +272,14 @@ func main() {
 
 	headers, rows, err := loadCSV(csvPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		errs = append(errs, fmt.Sprintf("Error: %v", err))
 	}
+
+	if len(errs) > 0 {
+		fatal(strings.Join(errs, "\n") + "\n")
+	}
+
+	fmt.Printf("Authenticated as: %s\n", loggedInAs)
 
 	if len(rows) == 0 {
 		fmt.Println("No recipients found in CSV.")
@@ -282,21 +294,15 @@ func main() {
 			rows[i] = append(rows[i], "Pending")
 		}
 		if err := saveCSV(csvPath, headers, rows); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: cannot write _status column to CSV: %v\n", err)
-			os.Exit(1)
+			fatal(fmt.Sprintf("Error: cannot write _status column to CSV: %v\n", err))
 		}
 	}
 
 	recipients, buildErrs := buildRecipients(headers, rows, statusCol, addrTmpl, subjectTmpl, bodyTmpl, attachTmpl)
-	if len(buildErrs) > 0 {
-		fmt.Fprintf(os.Stderr, "Template resolution errors:\n\n%s\n", strings.Join(buildErrs, "\n\n"))
-		os.Exit(1)
-	}
-
 	valErrs := validate(baseDir, recipients)
-	if len(valErrs) > 0 {
-		fmt.Fprintf(os.Stderr, "Validation errors:\n\n%s\n", strings.Join(valErrs, "\n\n"))
-		os.Exit(1)
+	allErrs := append(buildErrs, valErrs...)
+	if len(allErrs) > 0 {
+		fatal(fmt.Sprintf("Validation errors:\n\n%s\n", strings.Join(allErrs, "\n\n")))
 	}
 
 	var pending []int

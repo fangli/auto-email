@@ -1,0 +1,6 @@
+name,email,company,department,invoice,report
+Alice Johnson,alice@example.com,Acme Inc,Engineering,INV-001,
+Bob Smith,"bob@example.com, bob.smith@backup.com",Globex Corp,Sales,INV-002,Q1-report
+Carol White,carol@example.com,Initech,Marketing,Q1-report,
+Dave Brown,dave@example.com,Umbrella Corp,Finance,INV-004,Q1-report
+Eve Davis,"eve@example.com, eve.davis@example.org",Stark Industries,Engineering,INV-005,
