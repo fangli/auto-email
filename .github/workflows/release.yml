@@ -24,6 +24,8 @@ jobs:
       - name: Build all targets
         run: |
           version="${GITHUB_REF_NAME#release-}"
+          gitrev="${GITHUB_SHA::7}"
+          ldflags="-s -w -X main.version=${version} -X main.gitRev=${gitrev}"
           mkdir -p dist
 
           targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
@@ -34,7 +36,7 @@ jobs:
             [ "$os" = "windows" ] && ext=".exe"
 
             echo "Building $os/$arch..."
-            GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "dist/auto-email${ext}" .
+            GOOS=$os GOARCH=$arch go build -ldflags="${ldflags}" -o "dist/auto-email${ext}" .
 
             archive_name="auto-email-${version}-${os}-${arch}"
             mkdir -p "dist/${archive_name}"

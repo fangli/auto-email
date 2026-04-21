@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+var (
+	version = "dev"
+	gitRev  = "unknown"
+)
+
 type AppData struct {
 	Headers    []string
 	Rows       [][]string
@@ -213,6 +218,7 @@ func checkGws() (string, error) {
 }
 
 func main() {
+	fmt.Printf("Auto Email Sender v%s (%s)\n\n", version, gitRev)
 	csvFile := "tasks.csv"
 	dryrun := false
 	for i, arg := range os.Args[1:] {
