@@ -21,8 +21,11 @@ goto end
 
 :invalid_env
 echo.
+echo -----------------------------
+echo You haven't filled out the .env file yet.
 echo Please create a Googleworkspace Project with Gmail API enabled at https://console.cloud.google.com/, then add a Desktop App OAuth Client, and put the client_id and client_secret in .env file
 echo Once completed, run this script again to login.
+echo -----------------------------
 echo.
 pause
 exit /b 1
