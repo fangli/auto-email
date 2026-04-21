@@ -704,14 +704,14 @@ func runServer(app *AppData, pending []int, sentEver int, dryrun bool) Summary {
 	mux.HandleFunc("GET /api/preview", s.handlePreview)
 	mux.HandleFunc("GET /events", s.handleEvents)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:8123")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: cannot start server: %v\n", err)
 		return Summary{SentRun: s.sentRun, SkippedRun: s.skippedRun, SentEver: s.sentEver}
 	}
 
 	server := &http.Server{Handler: mux}
-	addr := "http://127.0.0.1:8123"
+	addr := "http://" + ln.Addr().String()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)

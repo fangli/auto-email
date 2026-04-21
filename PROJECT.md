@@ -49,7 +49,7 @@ gws gmail +send --to <address> --subject <subject> --body <body> [--html] [-a fi
 
 ### Web UI
 
-Once bootstrap completes, the app starts an HTTP server at `127.0.0.1:8123` and opens the browser. The UI provides:
+Once bootstrap completes, the app starts an HTTP server on an available port and opens the browser. The UI provides:
 
 1. Progress bar and counters (current/pending/sent/total).
 2. Recipient details: To, Subject, Body (rendered in iframe).

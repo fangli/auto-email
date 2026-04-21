@@ -87,7 +87,7 @@ The CSV's `_status` column tracks which emails have been sent. If the column doe
 
 ### Web UI
 
-The tool starts a local web server at `http://127.0.0.1:8123` and opens your browser. The UI shows:
+The tool starts a local web server on an available port and opens your browser. The UI shows:
 
 - Progress bar and counters
 - Current recipient details (to, subject, body preview)
