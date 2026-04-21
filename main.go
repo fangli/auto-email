@@ -360,6 +360,11 @@ func main() {
 
 	if len(pending) == 0 {
 		fmt.Printf("All %d emails already processed.\n", len(recipients))
+		if runtime.GOOS == "windows" {
+			fmt.Print("\nPress any key to exit...")
+			var b [1]byte
+			os.Stdin.Read(b[:])
+		}
 		os.Exit(0)
 	}
 
