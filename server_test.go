@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -532,6 +533,9 @@ func TestExtractPreviewText(t *testing.T) {
 		}
 	})
 	t.Run("valid_pdf_returns_text", func(t *testing.T) {
+		if _, err := exec.LookPath("pdftotext"); err != nil {
+			t.Skip("pdftotext not installed")
+		}
 		f := filepath.Join(t.TempDir(), "test.pdf")
 		os.WriteFile(f, minimalPDF("Hello World"), 0644)
 		got := extractPreviewText(f)
