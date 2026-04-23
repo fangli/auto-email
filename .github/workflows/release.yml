@@ -21,6 +21,9 @@ jobs:
       - name: Run tests
         run: go test ./... -count=1
 
+      - name: Generate Windows resources
+        run: go install github.com/tc-hib/go-winres@latest && go-winres make
+
       - name: Build all targets
         run: |
           version="${GITHUB_REF_NAME#release-}"
